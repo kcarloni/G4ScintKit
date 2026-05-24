@@ -1,0 +1,1052 @@
+/*
+ * author:      Erik Dietz-Laursonn
+ * institution: Physics Institute 3A, RWTH Aachen University, Aachen, Germany
+ * copyright:   Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License
+ */
+
+
+#include <G4VisAttributes.hh>
+#include <G4PVPlacement.hh>
+#include <G4GeometryManager.hh>
+#include <G4LogicalSkinSurface.hh>
+#include <G4LogicalBorderSurface.hh>
+#include <G4PhysicalVolumeStore.hh>
+#include <G4LogicalVolumeStore.hh>
+#include <G4SolidStore.hh>
+#include <G4Element.hh>
+#include <G4MaterialTable.hh>
+
+#include "DetectorConstruction.hh"
+#include "ManifestFile.hh"
+
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <string>
+
+using namespace CLHEP;   //for mathematics (e.g. CLHEP::sqrt, CLHEP::pi, CLHEP::c_light, CLHEP::h_Planck,...)
+
+
+// ---- helpers for the manifest seam (file-local) ----
+namespace
+{
+	// Extract a row-major 3x3 rotation matrix from a G4Transform3D.
+	void rotToArray(double out[9], const G4Transform3D& t)
+	{
+		CLHEP::HepRotation r = t.getRotation();
+		out[0] = r.xx(); out[1] = r.xy(); out[2] = r.xz();
+		out[3] = r.yx(); out[4] = r.yy(); out[5] = r.yz();
+		out[6] = r.zx(); out[7] = r.zy(); out[8] = r.zz();
+	}
+
+	// Rebuild a G4Transform3D from a row-major rotation array + translation.
+	G4Transform3D makeTransform(const double r[9], const G4ThreeVector& pos)
+	{
+		G4RotationMatrix rot( G4ThreeVector(r[0], r[3], r[6]),    // column X
+		                      G4ThreeVector(r[1], r[4], r[7]),    // column Y
+		                      G4ThreeVector(r[2], r[5], r[8]) );  // column Z
+		return G4Transform3D(rot, pos);
+	}
+
+	G4VPhysicalVolume* lookupVolume(
+			const std::map<G4String, G4VPhysicalVolume*>& volumes, const G4String& key)
+	{
+		std::map<G4String, G4VPhysicalVolume*>::const_iterator it = volumes.find(key);
+		if (it == volumes.end())
+			throw std::runtime_error("PlaceManifest: unknown volume reference '"
+			        + std::string(key) + "'");
+		return it->second;
+	}
+}
+
+
+
+// class variables begin with capital letters, local variables with small letters
+
+
+
+/**
+ *  Function to create the simulation setup and register it to Geant4:
+ *  - will be called by Geant4 in the initialisation process and <b> has to create materials and volumes as well as to return the pointer to the world volume (the volume that contains all other volumes) </b>
+ *  - calls DefineVariables(), DefineElements(), DefineMaterials(), and DefineMaterialProperties().
+ *  - creates the setup that is defined inside and registers it to Geant4
+ */
+G4VPhysicalVolume* DetectorConstruction::Construct()
+{
+	DefineVariables();
+	DefineElements();
+	DefineMaterials();
+	DefineMaterialProperties();
+
+	//   ######  solids (dimensions):  ######   //
+
+		//---------- experimental hall (world volume) ----------//
+		G4Box * world_solid = new G4Box("world_solid", 
+			WorldDimensions.x(), WorldDimensions.y(), WorldDimensions.z());
+
+	//
+
+	//   ######  logical volumes (material):  ######   //
+
+		//---------- experimental hall (world volume) ----------//
+		G4LogicalVolume * world_logical = new G4LogicalVolume(world_solid, Material_Vacuum, "world_logical", 0, 0, 0);
+		world_logical->SetVisAttributes(G4VisAttributes::Invisible);
+
+		
+		//   ######  physical volumes (placement):  ######   //
+		// NOTE: G4PVPlacement puts the volume to be placed into EVERY physical volume emanating from the same logical volume 
+		// (no matter whether the logical or physical volume is specified as mother volume)!
+		// => If G4PVPlacement should be able to distinguish physical volumes, for each physical volume a separate logical volume has to be created.
+		// => rule of thumb: For each volume that might become a mother volume, a separate logical volume should to be created.
+
+		//---------- experimental hall (world volume) ----------//
+		G4VPhysicalVolume * world_physical = new G4PVPlacement(G4Transform3D(), world_logical, "world", 0, false, 0);
+	//
+
+	// ===== geometry manifest =====
+	// Every geometry - named setups and file-sourced alike - is built as a
+	// flat GeometryManifest and realised by the generic PlaceManifest
+	// interpreter. See GeometryManifest.hh and the architecture-and-pipeline
+	// plan.
+	G4String manifestInput  = Messenger->GetManifestInputFile();
+	G4String requestedSetup = Messenger->GetSetupIdentificationString();
+
+	GeometryManifest manifest;
+	if ( !manifestInput.empty() )
+	{
+		G4cout << "DetectorConstruction: reading geometry manifest "
+		       << manifestInput << G4endl;
+		manifest = ManifestFile::Read( manifestInput );
+	}
+	else if ( requestedSetup == "B1" )
+	{
+		BuildManifest_B1( manifest );
+	}
+	else if ( requestedSetup == "B2" )
+	{
+		BuildManifest_B2( manifest );
+	}
+	else
+	{
+		throw std::runtime_error(
+			"DetectorConstruction: unknown setup '"
+			+ std::string(requestedSetup) + "' and no --manifest file given" );
+	}
+
+	PlaceManifest( manifest, world_physical, world_logical );
+
+	G4String dumpPath = Messenger->GetManifestDumpFile();
+	if ( !dumpPath.empty() )
+	{
+		ManifestFile::Write( manifest, dumpPath );
+		G4cout << "DetectorConstruction: wrote geometry manifest "
+		       << dumpPath << G4endl;
+	}
+
+	return world_physical;   // experimental hall with all volumes placed inside
+}
+
+
+// ============================================================================
+//  Manifest seam: BuildManifest_B1 / PlaceManifest / PlaceCasing
+//  (see GeometryManifest.hh and the architecture-and-pipeline plan)
+// ============================================================================
+
+/**
+ *  Emit a GeometryManifest describing the "B1" setup: a single scintillator bar
+ *  read out by one straight WLS fibre with a reflective end, one SiPM, and a
+ *  wrapping. The geometry maths is identical to the legacy B1 branch; only the
+ *  output target (a manifest, not direct GODDESS calls) differs.
+ */
+void DetectorConstruction::BuildManifest_B1(GeometryManifest& manifest)
+{
+	manifest.setup_label = "B1";
+
+	// --- parameters (mirrors the legacy parameter block + B1 branch) ---
+	const G4double fiber_diameter      = 1 * CLHEP::mm;
+	const G4int    num_bars            = 1;
+	const G4double bar_width_buffer    = 0.25 * CLHEP::mm;
+	const G4double bar_width           = ScintiDimensions[0] + 2 * bar_width_buffer;
+	const G4double fiber_pos_offset_y  = 1.1 * fiber_diameter / 2;
+	const G4double fiber_length_buffer = 2 * CLHEP::mm;
+	const G4double coupling_width      = 0.25 * CLHEP::mm;
+
+	const G4double fiber_pos_x   = bar_width / 4;
+	const G4double fiber_pos_y   = fiber_pos_offset_y;
+	const G4double fiber_pos_z   = ScintiDimensions[2] / 2 + fiber_length_buffer;
+	const G4double sipm_pos_z    = fiber_pos_z + 60 * CLHEP::mm;
+	const G4double sipm_edge_len = 2 * CLHEP::mm;
+	const G4ThreeVector sipm_face_dir(0., 0., -1.);
+
+	const G4ThreeVector fiber_pos_start(-1 * fiber_pos_x, -1 * fiber_pos_y,  sipm_pos_z);
+	const G4ThreeVector fiber_pos_end  (-1 * fiber_pos_x, -1 * fiber_pos_y, -1 * fiber_pos_z);
+
+	const G4ThreeVector sipm_pos = fiber_pos_start + G4ThreeVector(0., 0., coupling_width);
+	const G4double coupling_pos_z =
+		( fiber_pos_start.z() - fiber_pos_end.z() ) / 2 + coupling_width / 2;
+	const G4ThreeVector coupling_pos(0., 0., -1 * coupling_pos_z);
+
+	// Placement order (geometry-critical): scintillator -> fibre -> wrapping -> SiPM.
+
+	// --- scintillator ---
+	ScintEntry s;
+	s.name          = "scint_0";
+	s.g4name        = "";                       // legacy B1 does not set a tile name
+	s.dims          = ScintiDimensions;
+	s.pos           = ScintiTransform.getTranslation();
+	rotToArray(s.rot, ScintiTransform);
+	s.mother        = "world";
+	s.material_file = ScintiPropertyFile;
+	s.sensitive     = true;
+	manifest.placements.push_back(PlacementEntry::Scint(s));
+
+	// --- fibre ---
+	FiberEntry f;
+	f.name             = "fiber_0";
+	f.kind             = "straight";
+	f.mother           = "scint_0";
+	f.start            = fiber_pos_start;
+	f.end              = fiber_pos_end;
+	f.material_file    = WLSFibrePropertyFile;
+	f.reference        = "";                    // legacy B1 does not set a reference
+	f.glued            = true;
+	f.glue_file        = OpticalCementPropertyFile;
+	f.glue_profile     = "round";
+	f.end_reflectivity = 1.0;                   // reflective end (fibre is not looped)
+	f.loop_id          = -1;                    // single fibre: print length individually
+	manifest.placements.push_back(PlacementEntry::Fiber(f));
+
+	// --- wrapping (after the fibre, which must already stick out) ---
+	// cut left empty: PlaceManifest auto-derives the cut-volume candidates
+	// from the manifest reference graph (this tile's fibres).
+	WrapEntry w;
+	w.scint         = "scint_0";
+	w.g4name        = "wrapping_1";
+	w.material_file = WrappingPropertyFile;
+	manifest.placements.push_back(PlacementEntry::Wrap(w));
+
+	// --- SiPM ---
+	SipmEntry sp;
+	sp.name            = "sipm";
+	sp.ref_volume      = "scint_0";
+	sp.face_dir        = sipm_face_dir;
+	sp.rel_pos         = sipm_pos;
+	sp.edge_length     = sipm_edge_len;
+	sp.fiber           = "fiber_0";
+	sp.coupling_normal = sipm_face_dir;
+	sp.coupling_pos    = coupling_pos;
+	sp.coupling_width  = coupling_width;
+	sp.fiber_is_base   = true;
+	manifest.placements.push_back(PlacementEntry::Sipm(sp));
+
+	// --- casing (module bounding box) ---
+	manifest.casing.module_half_x      = bar_width / 2;
+	manifest.casing.module_min_y       = -ScintiDimensions[1] / 2;
+	manifest.casing.module_max_y       =  ScintiDimensions[1] / 2;
+	manifest.casing.module_half_z      = ScintiDimensions[2] / 2;
+	manifest.casing.aluminum_thickness = Messenger->GetAluminumSheetThickness();
+	manifest.casing.lead_thickness     = Messenger->GetLeadSheetThickness();
+	manifest.casing.num_bars           = num_bars;
+	manifest.casing.bar_width          = bar_width;
+	manifest.casing.scinti_z           = ScintiDimensions[2];
+}
+
+
+/**
+ *  Emit a GeometryManifest describing the "B2" setup: `num_bars` scintillator
+ *  bars, each read out by a WLS fibre routed in a u-turn (front quarter-bend,
+ *  straight, 180-deg u-turn, straight) with a back end loop. All fibres feed one
+ *  SiPM. This is a faithful transcription of the legacy B2 branch: the routing
+ *  trig is unchanged; only the output target (manifest entries instead of direct
+ *  GODDESS calls) differs. Each bar contributes, in construction order, one
+ *  scintillator, 11 fibre segments and one wrapping; the SiPM is placed last.
+ *
+ *  loop_id tags every fibre with one of the 4 readout loops so PlaceManifest can
+ *  reproduce the legacy per-loop fibre-length totals.
+ */
+void DetectorConstruction::BuildManifest_B2(GeometryManifest& manifest)
+{
+	manifest.setup_label = "B2";
+
+	// --- parameters (mirrors the legacy shared block + B2 branch) ---
+	const G4double fiber_diameter          = 1 * CLHEP::mm;
+	const G4int    num_bars                = 4;
+	const G4double bar_width_buffer        = 0.25 * CLHEP::mm;
+	const G4double bar_width               = ScintiDimensions[0] + 2 * bar_width_buffer;
+	const G4double inter_bar_spacing       = 2 * CLHEP::mm;
+	const G4double full_bar_width          = bar_width + 2 * inter_bar_spacing;
+	const G4double fiber_pos_offset_y      = 1.1 * fiber_diameter / 2;
+	const G4double fiber_length_buffer     = 2 * CLHEP::mm;
+	const G4double fiber_end_loop_radius   = full_bar_width;
+	const G4double fiber_front_bend_radius = 70 * CLHEP::mm;
+	const G4double fiber_safety_margin     = 1.0001 * fiber_diameter;
+	const G4double coupling_width          = 0.25 * CLHEP::mm;
+
+	const G4double bar_pos_offset_y = 4 * fiber_pos_offset_y;
+	const G4double bar_pos_zero_x   =
+		-1 * (num_bars / 2) * full_bar_width + full_bar_width / 2;
+
+	const G4double fiber_pos_x = bar_width / 4;
+	const G4double fiber_pos_y = fiber_pos_offset_y;
+	const G4double fiber_pos_z = ScintiDimensions[2] / 2 + fiber_length_buffer;
+
+	const G4double fiber_front_straight_length = 83 * CLHEP::cm;
+	const G4double fiber_front_shift_y         = 44 * CLHEP::cm;
+	const G4double fiber_offset_length         = bar_width / 2;
+
+	const G4double sipm_edge_length = 10 * CLHEP::mm;
+	const G4double sipm_half_width  = 0.25 * CLHEP::mm;
+
+	// --- fibre internal segments (bar-relative, identical for every bar) ---
+	const G4ThreeVector fiber_left_pos_start (-1 * fiber_pos_x, -1 * fiber_pos_y,  1 * fiber_pos_z);
+	const G4ThreeVector fiber_left_pos_end   (-1 * fiber_pos_x, -1 * fiber_pos_y, -1 * fiber_pos_z);
+	const G4ThreeVector fiber_right_pos_start( 1 * fiber_pos_x,  1 * fiber_pos_y,  1 * fiber_pos_z);
+	const G4ThreeVector fiber_right_pos_end  ( 1 * fiber_pos_x,  1 * fiber_pos_y, -1 * fiber_pos_z);
+
+	// --- fibre back end loops ---
+	const G4ThreeVector fiber_left_end_loop_pos_start = fiber_left_pos_end;
+	const G4ThreeVector fiber_left_end_loop_pos_end =
+		fiber_left_pos_end + G4ThreeVector(2 * fiber_end_loop_radius, 0, 0);
+	const G4ThreeVector fiber_right_end_loop_pos_start = fiber_right_pos_end;
+	const G4ThreeVector fiber_right_end_loop_pos_end =
+		fiber_right_pos_end + G4ThreeVector(-2 * fiber_end_loop_radius, 0, 0);
+
+	std::vector<PlacementEntry>& placements = manifest.placements;
+
+	// Append a straight fibre entry in construction order.
+	// glued => SetFibreGlued (legacy glues only the two inner fibres).
+	struct StraightEmitter
+	{
+		std::vector<PlacementEntry>& out;
+		G4String wls, cement;
+		void operator()(const G4String& name, const G4String& mother,
+		                const G4ThreeVector& start, const G4ThreeVector& end,
+		                const G4String& reference, G4bool glued, G4int loop_id)
+		{
+			FiberEntry f;
+			f.name          = name;
+			f.kind          = "straight";
+			f.mother        = mother;
+			f.start         = start;
+			f.end           = end;
+			f.material_file = wls;
+			f.reference     = reference;
+			f.glued         = glued;
+			if (glued) { f.glue_file = cement; f.glue_profile = "round"; }
+			f.loop_id       = loop_id;
+			out.push_back(PlacementEntry::Fiber(f));
+		}
+	};
+
+	// Append a bent (circular-arc) fibre entry in construction order.
+	struct BentEmitter
+	{
+		std::vector<PlacementEntry>& out;
+		G4String wls;
+		void operator()(const G4String& name, const G4String& mother,
+		                const G4ThreeVector& start, const G4ThreeVector& end,
+		                G4double bend_angle, const G4ThreeVector& bend_axis,
+		                const G4String& reference, G4int loop_id)
+		{
+			FiberEntry f;
+			f.name          = name;
+			f.kind          = "bent";
+			f.mother        = mother;
+			f.start         = start;
+			f.end           = end;
+			f.bend_angle    = bend_angle;
+			f.bend_axis     = bend_axis;
+			f.material_file = wls;
+			f.reference     = reference;
+			f.glued         = false;
+			f.loop_id       = loop_id;
+			out.push_back(PlacementEntry::Fiber(f));
+		}
+	};
+
+	StraightEmitter emitStraight = { placements, WLSFibrePropertyFile, OpticalCementPropertyFile };
+	BentEmitter     emitBent     = { placements, WLSFibrePropertyFile };
+
+	// last bar's values are reused for the single SiPM placed after the loop
+	G4ThreeVector last_sipm_pos;
+	G4ThreeVector last_coupling_pos;
+	G4String      last_fiber_name;
+
+	for (G4int iter = 0; iter < num_bars; ++iter)
+	{
+		const G4String iter_str   = std::to_string(iter);
+		const G4int    y_shift    = (iter % 2 == 0) ? 0 : 1;
+		const G4int    left_loop  = (iter % 2) * 2;
+		const G4int    right_loop = (iter % 2) * 2 + 1;
+		const G4bool   construct_left_back_loop = ( iter % 4 < 2 );
+
+		const G4double front_bend_radius = fiber_front_bend_radius - fiber_safety_margin * iter;
+		const G4double uturn_radius      = fiber_front_bend_radius + fiber_safety_margin * iter;
+
+		const G4ThreeVector scinti_bar_pos(
+			bar_pos_zero_x + iter * full_bar_width,
+			y_shift * bar_pos_offset_y,
+			0 * CLHEP::mm);
+
+		// fibre: front quarter-circle bend
+		const G4ThreeVector fiber_left_front_bend_pos_start = fiber_left_pos_start;
+		const G4ThreeVector fiber_left_front_bend_pos_end =
+			fiber_left_pos_start + G4ThreeVector(front_bend_radius, 0, front_bend_radius);
+		const G4ThreeVector fiber_right_front_bend_pos_start = fiber_right_pos_start;
+		const G4ThreeVector fiber_right_front_bend_pos_end =
+			fiber_right_pos_start + G4ThreeVector(front_bend_radius, 0, front_bend_radius);
+
+		// fibre: straight - uturn - straight
+		const G4double base =
+			0.5 * ( fiber_front_straight_length
+			        - 0.5 * CLHEP::pi * front_bend_radius
+			        - CLHEP::pi * uturn_radius );
+		const G4double offset = 0.5 * ( iter * full_bar_width );
+
+		const G4double R1 = base - offset + 0.5 * ( fiber_front_shift_y - front_bend_radius );
+		const G4double R2 = base - offset + 0.5 * ( fiber_front_shift_y - front_bend_radius - fiber_offset_length );
+		const G4double L1 = base + offset + 0.5 * ( -fiber_front_shift_y + front_bend_radius );
+		const G4double L2 = base + offset + 0.5 * ( -fiber_front_shift_y + front_bend_radius + fiber_offset_length );
+
+		// straight
+		const G4ThreeVector fiber_left_first_straight_pos_start = fiber_left_front_bend_pos_end;
+		const G4ThreeVector fiber_left_first_straight_pos_end =
+			fiber_left_front_bend_pos_end + G4ThreeVector(R1, 0, 0);
+		const G4ThreeVector fiber_right_first_straight_pos_start = fiber_right_front_bend_pos_end;
+		const G4ThreeVector fiber_right_first_straight_pos_end =
+			fiber_right_front_bend_pos_end + G4ThreeVector(R2, 0, 0);
+
+		// uturn
+		const G4ThreeVector fiber_left_uturn_pos_start = fiber_left_first_straight_pos_end;
+		const G4ThreeVector fiber_left_uturn_pos_end =
+			fiber_left_first_straight_pos_end + G4ThreeVector(0, 0, 2 * uturn_radius);
+		const G4ThreeVector fiber_right_uturn_pos_start = fiber_right_first_straight_pos_end;
+		const G4ThreeVector fiber_right_uturn_pos_end =
+			fiber_right_first_straight_pos_end + G4ThreeVector(0, 0, 2 * uturn_radius);
+
+		// straight
+		const G4ThreeVector fiber_left_second_straight_pos_start = fiber_left_uturn_pos_end;
+		const G4ThreeVector fiber_left_second_straight_pos_end =
+			fiber_left_uturn_pos_end - G4ThreeVector(L1, 0, 0);
+		const G4ThreeVector fiber_right_second_straight_pos_start = fiber_right_uturn_pos_end;
+		const G4ThreeVector fiber_right_second_straight_pos_end =
+			fiber_right_uturn_pos_end - G4ThreeVector(L2, 0, 0);
+
+		// sipm pos needs to be relative to the world volume
+		const G4ThreeVector sipm_pos =
+			fiber_right_second_straight_pos_end + scinti_bar_pos
+			+ G4ThreeVector(-1 * coupling_width, 0, 0);
+		// coupling pos is relative to the sipm pos
+		const G4ThreeVector coupling_pos(0, 0, 0.5 * coupling_width + sipm_half_width);
+
+		const G4String scint_name = "scint_" + iter_str;
+
+		// ---- scintillator bar ----
+		ScintEntry s;
+		s.name          = scint_name;
+		s.g4name        = "scintillator_" + iter_str;
+		s.dims          = ScintiDimensions;
+		s.pos           = scinti_bar_pos;                   // identity rotation
+		s.mother        = "world";
+		s.material_file = ScintiPropertyFile;
+		s.sensitive     = true;
+		placements.push_back(PlacementEntry::Scint(s));
+
+		// ---- inner fibres (glued; mother = this scintillator) ----
+		emitStraight("fiber_" + iter_str + "_inner_l", scint_name,
+		             fiber_left_pos_start, fiber_left_pos_end, "", true, left_loop);
+		emitStraight("fiber_" + iter_str + "_inner_r", scint_name,
+		             fiber_right_pos_start, fiber_right_pos_end, "", true, right_loop);
+
+		// ---- back end loop (left or right, alternating every 2 bars) ----
+		if (construct_left_back_loop)
+			emitBent("fiber_" + iter_str + "_backloop", "world",
+			         fiber_left_end_loop_pos_start, fiber_left_end_loop_pos_end,
+			         180. * CLHEP::deg, G4ThreeVector(0, -1, 0.), scint_name, left_loop);
+		else
+			emitBent("fiber_" + iter_str + "_backloop", "world",
+			         fiber_right_end_loop_pos_start, fiber_right_end_loop_pos_end,
+			         180. * CLHEP::deg, G4ThreeVector(0, 1, 0.), scint_name, right_loop);
+
+		// ---- quarter-circle bends out of the front ----
+		emitBent("fiber_" + iter_str + "_frontbend_l", "world",
+		         fiber_left_front_bend_pos_start, fiber_left_front_bend_pos_end,
+		         90. * CLHEP::deg, G4ThreeVector(0, 1, 0), scint_name, left_loop);
+		emitBent("fiber_" + iter_str + "_frontbend_r", "world",
+		         fiber_right_front_bend_pos_start, fiber_right_front_bend_pos_end,
+		         90. * CLHEP::deg, G4ThreeVector(0, 1, 0), scint_name, right_loop);
+
+		// ---- straight segment after the front bend ----
+		emitStraight("fiber_" + iter_str + "_straight1_l", "world",
+		             fiber_left_first_straight_pos_start, fiber_left_first_straight_pos_end,
+		             scint_name, false, left_loop);
+		emitStraight("fiber_" + iter_str + "_straight1_r", "world",
+		             fiber_right_first_straight_pos_start, fiber_right_first_straight_pos_end,
+		             scint_name, false, right_loop);
+
+		// ---- u-turn bends ----
+		emitBent("fiber_" + iter_str + "_uturn_l", "world",
+		         fiber_left_uturn_pos_start, fiber_left_uturn_pos_end,
+		         180. * CLHEP::deg, G4ThreeVector(0, -1, 0), scint_name, left_loop);
+		emitBent("fiber_" + iter_str + "_uturn_r", "world",
+		         fiber_right_uturn_pos_start, fiber_right_uturn_pos_end,
+		         180. * CLHEP::deg, G4ThreeVector(0, -1, 0), scint_name, right_loop);
+
+		// ---- straight segment after the u-turn ----
+		emitStraight("fiber_" + iter_str + "_straight2_l", "world",
+		             fiber_left_second_straight_pos_start, fiber_left_second_straight_pos_end,
+		             scint_name, false, left_loop);
+		const G4String straight2_r = "fiber_" + iter_str + "_straight2_r";
+		emitStraight(straight2_r, "world",
+		             fiber_right_second_straight_pos_start, fiber_right_second_straight_pos_end,
+		             scint_name, false, right_loop);
+
+		// ---- wrapping (after this bar's fibres, before the next bar) ----
+		// cut left empty: PlaceManifest auto-derives the cut-volume candidates
+		// from the manifest reference graph (this bar's fibres).
+		WrapEntry w;
+		w.scint         = scint_name;
+		w.g4name        = "wrapping_" + iter_str;
+		w.material_file = WrappingPropertyFile;
+		placements.push_back(PlacementEntry::Wrap(w));
+
+		last_sipm_pos     = sipm_pos;
+		last_coupling_pos = coupling_pos;
+		last_fiber_name   = straight2_r;
+	}
+
+	// --- SiPM + optical coupling (couples to the last bar's final fibre) ---
+	SipmEntry sp;
+	sp.name            = "sipm";
+	sp.ref_volume      = "world";
+	sp.face_dir        = G4ThreeVector(1., 0., 0.);
+	sp.rel_pos         = last_sipm_pos;
+	sp.edge_length     = sipm_edge_length;
+	sp.fiber           = last_fiber_name;
+	sp.coupling_normal = G4ThreeVector(0., 0., -1.);
+	sp.coupling_pos    = last_coupling_pos;
+	sp.coupling_width  = coupling_width;
+	sp.fiber_is_base   = false;
+	manifest.placements.push_back(PlacementEntry::Sipm(sp));
+
+	// --- casing (module bounding box) ---
+	manifest.casing.module_half_x      = num_bars * full_bar_width / 2.0;
+	manifest.casing.module_min_y       = -ScintiDimensions[1] / 2;
+	manifest.casing.module_max_y       = bar_pos_offset_y + ScintiDimensions[1] / 2;
+	manifest.casing.module_half_z      = ScintiDimensions[2] / 2;
+	manifest.casing.aluminum_thickness = Messenger->GetAluminumSheetThickness();
+	manifest.casing.lead_thickness     = Messenger->GetLeadSheetThickness();
+	manifest.casing.num_bars           = num_bars;
+	manifest.casing.bar_width          = bar_width;
+	manifest.casing.scinti_z           = ScintiDimensions[2];
+}
+
+
+/**
+ *  Generic interpreter: build the Geant4 geometry described by `manifest` by
+ *  calling the GODDESS primitive constructors. Volumes are resolved by name.
+ *
+ *  Elements are placed in EXACTLY the manifest's placement order, which is
+ *  geometry-critical: GODDESS ConstructWrapping (with no explicit cut-list)
+ *  subtracts every physical volume that exists at call time, so a wrapping must
+ *  be replayed at the precise point in the sequence where it was emitted. The
+ *  per-element setter calls replay exactly what each manifest entry records, so
+ *  any GODDESS setter state is reproduced faithfully. The casing is placed last.
+ */
+void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
+        G4VPhysicalVolume* world_physical, G4LogicalVolume* world_logical)
+{
+	std::map<G4String, G4VPhysicalVolume*>  physicalOf;
+	std::map<G4String, G4ScintillatorTile*> tileOf;
+	physicalOf["world"] = world_physical;
+
+	for (size_t i = 0; i < manifest.placements.size(); ++i)
+	{
+		const PlacementEntry& p = manifest.placements[i];
+		switch (p.kind)
+		{
+		case PlacementEntry::SCINT:
+		{
+			const ScintEntry& s = p.scint;
+			if (!s.g4name.empty()) STConstructor->SetScintillatorName(s.g4name);
+			STConstructor->SetScintillatorTransformation(makeTransform(s.rot, s.pos));
+			if (s.sensitive) STConstructor->ConstructASensitiveDetector();
+
+			G4ScintillatorTile* tile = STConstructor->ConstructScintillator(
+				s.dims, s.material_file, lookupVolume(physicalOf, s.mother));
+
+			tileOf[s.name]     = tile;
+			physicalOf[s.name] = tile->GetScintillator_physicalVolume();
+			break;
+		}
+		case PlacementEntry::FIBER:
+		{
+			const FiberEntry& f = p.fiber;
+			if (f.glued)
+				FConstructor->SetFibreGlued(f.glue_file, f.glue_profile);
+			if (!f.reference.empty())
+				FConstructor->SetFibreReferenceVolume(lookupVolume(physicalOf, f.reference));
+			if (!std::isnan(f.start_reflectivity))
+				FConstructor->SetFibreStartPointReflectivity(f.start_reflectivity);
+			if (!std::isnan(f.end_reflectivity))
+				FConstructor->SetFibreEndPointReflectivity(f.end_reflectivity);
+
+			G4VPhysicalVolume* mother = lookupVolume(physicalOf, f.mother);
+			G4Fibre* fibre = 0;
+			if (f.kind == "bent")
+				fibre = FConstructor->ConstructFibre(
+					f.material_file, mother, f.start, f.end, f.bend_angle, f.bend_axis);
+			else
+				fibre = FConstructor->ConstructFibre(
+					f.material_file, mother, f.start, f.end);
+
+			physicalOf[f.name] = fibre->GetOutermostVolumeOutsideMother_physicalVolume();
+			break;
+		}
+		case PlacementEntry::WRAP:
+		{
+			const WrapEntry& w = p.wrap;
+			if (!w.g4name.empty()) STConstructor->SetWrappingName(w.g4name);
+
+			// Wrapping cut-volume candidates. An explicit w.cut is used
+			// verbatim (manual override); otherwise the candidates are
+			// auto-derived from the manifest reference graph in two passes:
+			//   pass 1 — every earlier fibre that belongs to this tile (its
+			//            mother or reference is the wrapped scintillator);
+			//   pass 2 — every earlier fibre sharing a loop_id with one from
+			//            pass 1 (multi-segment fibres routed through this
+			//            tile: the in-scint piece(s) live in the scint frame
+			//            but the cut that actually punches through the wrap
+			//            shell is the sibling piece in the wrap's mother).
+			// GODDESS ConstructWrapping then geometrically filters the
+			// candidates down to those that actually penetrate the wrapping
+			// shell — and silently rejects candidates whose Geant4 mother
+			// differs from the wrap's mother, so pass 1's in-scint pieces
+			// are harmless extras and pass 2's world-frame siblings are the
+			// ones that actually create the through-holes.
+			std::vector<G4VPhysicalVolume*> cuts;
+			if (!w.cut.empty())
+			{
+				for (size_t j = 0; j < w.cut.size(); ++j)
+					cuts.push_back(lookupVolume(physicalOf, w.cut[j]));
+			}
+			else
+			{
+				std::set<G4int> loop_ids;               // pass-1 loop_ids
+				std::set<std::string> picked;           // pass-1 fibre names
+				for (size_t j = 0; j < i; ++j)
+				{
+					if (manifest.placements[j].kind != PlacementEntry::FIBER)
+						continue;
+					const FiberEntry& cf = manifest.placements[j].fiber;
+					if (cf.mother == w.scint || cf.reference == w.scint)
+					{
+						cuts.push_back(lookupVolume(physicalOf, cf.name));
+						picked.insert(cf.name);
+						if (cf.loop_id >= 0) loop_ids.insert(cf.loop_id);
+					}
+				}
+				if (!loop_ids.empty())
+				{
+					for (size_t j = 0; j < i; ++j)
+					{
+						if (manifest.placements[j].kind != PlacementEntry::FIBER)
+							continue;
+						const FiberEntry& cf = manifest.placements[j].fiber;
+						if (cf.loop_id < 0) continue;
+						if (picked.count(cf.name)) continue;
+						if (loop_ids.count(cf.loop_id))
+							cuts.push_back(lookupVolume(physicalOf, cf.name));
+					}
+				}
+			}
+			STConstructor->SetWrappingCutVolumes(cuts);
+			std::map<G4String, G4ScintillatorTile*>::const_iterator it =
+				tileOf.find(w.scint);
+			if (it == tileOf.end())
+				throw std::runtime_error(
+					"PlaceManifest: WRAP references unknown scintillator '"
+					+ std::string(w.scint) + "'");
+			STConstructor->ConstructWrapping(it->second, w.material_file);
+			break;
+		}
+		case PlacementEntry::SIPM:
+		{
+			const SipmEntry& sp = p.sipm;
+			ConstructSiPM(
+				sp.name,
+				lookupVolume(physicalOf, sp.ref_volume),
+				sp.face_dir,
+				sp.rel_pos,
+				sp.edge_length,
+				world_physical,
+				lookupVolume(physicalOf, sp.fiber),
+				sp.coupling_normal,
+				sp.coupling_pos,
+				sp.coupling_width,
+				sp.fiber_is_base);
+			break;
+		}
+		}
+	}
+
+	// ---- casing (always last) ----
+	PlaceCasing(manifest.casing, world_logical);
+}
+
+
+/**
+ *  Place the outer aluminum box and lead sheet from a CasingSpec. Verbatim port
+ *  of the legacy casing code, sourcing its inputs from the manifest.
+ */
+void DetectorConstruction::PlaceCasing(const CasingSpec& c, G4LogicalVolume* world_logical)
+{
+	G4double al_box_top_y = c.module_max_y;   // default if no aluminum
+
+	// add aluminum box surrounding the scintillator bars (with 1mm air gap)
+	if ( c.aluminum_thickness > 0.0 * CLHEP::mm )
+	{
+		G4double al_gap = 1.0 * CLHEP::mm;
+		G4double al_t   = c.aluminum_thickness;
+
+		G4double inner_half_x = c.module_half_x + al_gap;
+		G4double inner_half_y = (c.module_max_y - c.module_min_y) / 2 + al_gap;
+		G4double inner_half_z = c.module_half_z + al_gap;
+
+		G4double outer_half_x = inner_half_x + al_t;
+		G4double outer_half_y = inner_half_y + al_t;
+		G4double outer_half_z = inner_half_z + al_t;
+
+		G4double box_center_y = (c.module_min_y + c.module_max_y) / 2;
+		al_box_top_y = box_center_y + outer_half_y;
+
+		G4Box* al_outer = new G4Box("al_outer", outer_half_x, outer_half_y, outer_half_z);
+		G4Box* al_inner = new G4Box("al_inner", inner_half_x, inner_half_y, inner_half_z);
+		G4SubtractionSolid* al_box_solid =
+			new G4SubtractionSolid("al_box_solid", al_outer, al_inner);
+
+		G4LogicalVolume* al_box_log =
+			new G4LogicalVolume(al_box_solid, Material_Aluminum, "Al_box_log");
+		al_box_log->SetVisAttributes(G4Colour::Blue());
+
+		new G4PVPlacement(0, G4ThreeVector(0, box_center_y, 0), al_box_log,
+		                  "aluminum_box_phys", world_logical, false, 0);
+	}
+
+	// add lead sheet on top of the aluminum box
+	if ( c.lead_thickness > 0.0 * CLHEP::mm )
+	{
+		G4double lead_half_thickness = c.lead_thickness / 2;
+
+		G4double sheet_half_x = c.num_bars * c.bar_width;
+		G4double sheet_half_z = c.scinti_z / 2;
+		G4double sheet_pos_y  = al_box_top_y + lead_half_thickness;
+
+		G4ThreeVector sheet_pos(0 * CLHEP::mm, sheet_pos_y, 0 * CLHEP::mm);
+
+		G4Box* lead_sheet = new G4Box("lead_sheet",
+			sheet_half_x, lead_half_thickness, sheet_half_z);
+
+		G4LogicalVolume* lead_sheet_log =
+			new G4LogicalVolume(lead_sheet, Material_Lead, "Pb_sheet_log");
+		lead_sheet_log->SetVisAttributes(G4Colour::Grey());
+
+		new G4PVPlacement(0, sheet_pos, lead_sheet_log,
+		                  "lead_sheet_phys", world_logical, false, 0);
+	}
+}
+
+
+
+/**
+*  Function for the initialisation of variables.
+*/
+void DetectorConstruction::DefineVariables()
+{
+	//---------- experimental hall (world volume) ----------//
+		WorldDimensions = G4ThreeVector(10. * m, 10. * m, 10. * m);
+	//
+
+	//---------- scintillator tile ----------//
+
+		ScintiDimensions = Messenger->GetScintillatorDimensions();
+		if ( std::isnan( ScintiDimensions.x() ) ||  std::isnan( ScintiDimensions.y() ) || std::isnan( ScintiDimensions.z() ) )
+		{
+			ScintiDimensions = G4ThreeVector(100. * CLHEP::mm, 10. * CLHEP::mm, 100. * CLHEP::mm);
+		}
+	//
+
+	//---------- fibre ----------//
+		FibreEndReflectivity = 0.9;
+	//
+}
+
+
+/**
+*  Function to create chemical elements and register them to Geant4:
+*  - creates hydrogen, carbon, nitrogen, oxygen, fluorine, aluminum, titanium, and lead
+*  - <b> if other chemical elements are needed for the simulation, they have to be defined here </b>
+*/
+void DetectorConstruction::DefineElements()
+{
+// http://pdg.lbl.gov/2009/AtomicNuclearProperties/index.html
+	new G4Element("Hydrogen", "H", 1., 1.00794 * g/mole);
+	new G4Element("Carbon", "C", 6., 12.0107 * g/mole);
+	new G4Element("Nitrogen", "N", 7., 14.0067 * g/mole);
+	new G4Element("Oxygen", "O", 8., 15.9994 * g/mole);
+	new G4Element("Fluorine", "F", 9., 18.9984032 * g/mole);
+	new G4Element("Aluminum", "Al", 13., 26.9815386 * g/mole);
+	new G4Element("Silicon", "Si", 14., 28.0855 * g/mole);
+	new G4Element("Titanium", "Ti", 22., 47.867 * g/mole);
+	new G4Element("Lead", "Pb", 82., 207.2 * g/mole);
+}
+
+/**
+*  Function to create materials and register them to Geant4.
+*/
+void DetectorConstruction::DefineMaterials()
+{
+	//---------- vacuum ----------//
+	// G4Material(const G4String &name, G4double z, G4double a, G4double density, G4State state=kStateUndefined, G4double temp=STP_Temperature, G4double pressure=STP_Pressure)
+	Material_Vacuum = new G4Material("Vacuum", 1., 
+		1.01 * g/mole, universe_mean_density, 
+		kStateGas, 0.1 * kelvin, 1.e-19 * pascal
+	);		// definition from Geant
+
+	//---------- air ----------//
+	// G4Material(const G4String &name, G4double density, G4int nComponents, G4State state=kStateUndefined, G4double temp=STP_Temperature, G4double pressure=STP_Pressure)
+	Material_Air = new G4Material("Air", 1.293 * kg/m3, 2);
+	Material_Air->AddElement(G4Element::GetElement("Nitrogen"), 70 * perCent);
+	Material_Air->AddElement(G4Element::GetElement("Oxygen"), 30 * perCent);
+
+	//--------- aluminum ------//
+	G4double aluminum_density = 2.699 * g/cm3;
+	G4double aluminum_a = 26.98 * g/mole;
+	Material_Aluminum = new G4Material("metalAluminum", 13, aluminum_a, aluminum_density, kStateSolid);
+
+	//--------- lead ----------//
+	G4double lead_density = 11.35 * g/cm3;
+	G4double lead_a       = 207.2 * g/mole;  // atomic mass
+	Material_Lead = new G4Material("metalLead", 82, lead_a, lead_density, kStateSolid);
+
+}
+
+//   ######  material properties:  ######   //
+// NOTE: possible Properties:
+	//         "RINDEX":			(spectrum (in dependence of the photon energy))		(obligatory property!)
+	//		defines the refraction index of the material, used for boundary processes, Cerenkov radiation and Rayleigh scattering
+	//         "ABSLENGTH":			(spectrum (in dependence of the photon energy))
+	//		defines the absorption length (absorption spectrum) of the material, used for the "normal" absorption of optical photons (default is infinity, i.e. no absorption)
+	//		(the absorption length for the WLS process of WLS materials is specified by "WLSABSLENGTH", "ABSLENGTH" can be specified additionally to simulate a non-WLS absorption fraction)
+	//         "RAYLEIGH":			(spectrum (in dependence of the photon energy))
+	//		defines the absorption length of the material, used for the rayleigh scattering of optical photons (default is infinity, i.e. no scattering)
+	//
+	//         "SCINTILLATIONYIELD":	(constant value (energy independent))			(obligatory property for scintillator materials!)
+	//		defines the mean number of photons, emitted per MeV energy deposition in the scintillator material (the real number is Poisson/Gauss distributed)
+	//		(can also be specified separately for different particles by putting "ELECTRON...", "PROTON...", "DEUTERON...", "TRITON...", "ALPHA...", "ION..." infront of "SCINTILLATIONYIELD")
+	//		(default is 0, i.e. no scintillation process)
+	//         "RESOLUTIONSCALE":		(constant value (energy independent))
+	//		defines the intrinsic resolution of the scintillator material, used for the statistical distribution of the number of generated photons in the scintillation process
+	//		(values > 1 result in a wider distribution, values < 1 result in a narrower distribution -> 1 should be chosen as default)
+	//		(default is 0)
+	//         "FASTCOMPONENT":		(spectrum (in dependence of the photon energy))		(at least one "...COMPONENT" is obligatory for scintillator materials!)
+	//		defines the emission spectrum of the material, used for the fast scintillation process	NOTE: emission spectra are NOT linearly extrapolated between two given points!
+	//         "SLOWCOMPONENT":		(spectrum (in dependence of the photon energy))		(at least one "...COMPONENT" is obligatory for scintillator materials!)
+	//		defines the emission spectrum of the material, used for the slow scintillation process	NOTE: emission spectra are NOT linearly extrapolated between two given points!
+	//         "FASTTIMECONSTANT":		(constant value (energy independent))
+	//		defines the decay time (time between energy deposition and photon emission), used for the fast scintillation process (default is 0)
+	//         "SLOWTIMECONSTANT":		(constant value (energy independent))
+	//		defines the decay time (time between energy deposition and photon emission), used for the slow scintillation process (default is 0)
+	//         "FASTSCINTILLATIONRISETIME":	(constant value (energy independent))
+	//		defines the rise time (time between the start of the emission and the emission peak), used for the fast scintillation process (default is 0)
+	//         "SLOWSCINTILLATIONRISETIME":	(constant value (energy independent))
+	//		defines the rise time (time between the start of the emission and the emission peak), used for the slow scintillation process (default is 0)
+	//         "YIELDRATIO":		(constant value (energy independent))			(obligatory property for scintillator materials, if both "...COMPONENT"s are specified!)
+	//		defines relative strength of the fast scintillation process as a fraction of total scintillation yield (default is 0)
+	//
+	//         "WLSABSLENGTH":		(spectrum (in dependence of the photon energy))		(obligatory property for WLS materials!)
+	//		defines the absorption length (absorption spectrum) of the material, used for the WLS process (default is infinity, i.e. no WLS process)
+	//         "WLSCOMPONENT":		(spectrum (in dependence of the photon energy))		(obligatory property for WLS materials!)
+	//		defines the emission spectrum of the material, used for the WLS process	NOTE: emission spectra are NOT linearly extrapolated between two given points!
+	//         "WLSTIMECONSTANT":		(constant value (energy independent))
+	//		defines the decay time (time between absorption and emission), used for the WLS process (default is 0)
+	//         "WLSMEANNUMBERPHOTONS":	(constant value (energy independent))
+	//		defines the mean number of photons, emitted for each photon that was absorbed by the WLS material
+	//		(if specified, the real number of emitted photons is Poisson distributed, else the real number of emitted photons is 1)
+//
+
+/**
+ *  Function to set material properties and register them to Geant4.
+ */
+void DetectorConstruction::DefineMaterialProperties()
+{
+	//---------- experimental hall (world volume) -> vacuum or air ----------//
+	// by now, GEANT expects that a material property with the name identifier RINDEX is wavelength/energy dependent (http://hypernews.slac.stanford.edu/HyperNews/geant4/get/opticalphotons/379.html)!
+	G4MaterialPropertyVector * refractiveIndex_Vacuum = PropertyTools->GetPropertyDistribution(1.);
+
+	G4MaterialPropertiesTable * mpt_Vacuum = new G4MaterialPropertiesTable();
+	mpt_Vacuum->AddProperty("RINDEX", refractiveIndex_Vacuum);
+	Material_Vacuum->SetMaterialPropertiesTable(mpt_Vacuum);
+
+
+	// by now, GEANT expects that a material property with the name identifier RINDEX is wavelength/energy dependent (http://hypernews.slac.stanford.edu/HyperNews/geant4/get/opticalphotons/379.html)!
+	G4MaterialPropertyVector * refractiveIndex_Air = PropertyTools->GetPropertyDistribution(1.);
+	// the refractive index of air can approximated by 1 as it only varies from 1.000308 (230nm) to 1.00027417 (1000nm)
+	// http://refractiveindex.info/?group=GASES&material=Air
+
+	// absorption and rayleigh scattering can be neglected, as only relatively thin layers are used in this simulation
+
+	G4MaterialPropertiesTable * mpt_Air = new G4MaterialPropertiesTable();
+	mpt_Air->AddProperty("RINDEX", refractiveIndex_Air);
+	Material_Air->SetMaterialPropertiesTable(mpt_Air);
+}
+
+
+void DetectorConstruction::CleanUp()
+{
+	G4GeometryManager::GetInstance()->OpenGeometry();
+
+	G4LogicalSkinSurface::CleanSurfaceTable();
+	G4LogicalBorderSurface::CleanSurfaceTable();
+
+	G4PhysicalVolumeStore::GetInstance()->Clean();
+	G4LogicalVolumeStore::GetInstance()->Clean();
+	G4SolidStore::GetInstance()->Clean();
+}
+
+
+void DetectorConstruction::DeleteMaterialPropertiesTables()
+{
+	G4MaterialTable* matTable = (G4MaterialTable*)G4Material::GetMaterialTable();   // getting the table of materials from Geant
+	for(size_t i = 0; i < matTable->size(); i++) delete (*(matTable))[i]->GetMaterialPropertiesTable();
+}
+
+
+void DetectorConstruction::DeleteMaterials()
+{
+	G4MaterialTable* matTable = (G4MaterialTable*) G4Material::GetMaterialTable();   // getting the table of materials from Geant
+	for(size_t i = 0; i < matTable->size(); i++) delete (*(matTable))[i];
+	matTable->clear();
+}
+
+
+/**
+ *  Construct the photon detector and its optical coupling to the fiber.
+ *
+ *  In GODDESS mode the OCConstructor builds a coupling slab between fiber and detector.
+ *  In g4sipm mode the housing's built-in epoxy window (n=1.5) serves as the optical
+ *  interface, so no external coupling is constructed.
+ */
+G4VPhysicalVolume* DetectorConstruction::ConstructSiPM(
+	const G4String& name,
+	G4VPhysicalVolume* refVolume,
+	const G4ThreeVector& faceDir,
+	const G4ThreeVector& relPos,
+	G4double edgeLength,
+	G4VPhysicalVolume* worldPhysical,
+	G4VPhysicalVolume* fiberPhysical,
+	const G4ThreeVector& couplingNormal,
+	const G4ThreeVector& couplingPos,
+	G4double couplingWidth,
+	G4bool fiberIsBase)
+{
+#ifdef USE_G4SIPM
+	if (Messenger->GetUseG4Sipm())
+	{
+		// ---- g4sipm path ----
+		G4String modelFile = Messenger->GetSipmModelFile();
+		G4SipmModel* model = nullptr;
+
+		if (modelFile.empty() || modelFile == "generic")
+		{
+			model = G4SipmModelFactory::getInstance()->createGenericSipmModel();
+		}
+		else if (modelFile == "hamamatsu-s10362-11-100c")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036211100();
+		}
+		else if (modelFile == "hamamatsu-s10362-33-100c")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036233100();
+		}
+		else if (modelFile == "hamamatsu-s10362-33-050c")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036233050();
+		}
+		else if (modelFile == "hamamatsu-s12651-050")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS12651050();
+		}
+		else if (modelFile == "hamamatsu-s12573-100c")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS12573100C();
+		}
+		else if (modelFile == "hamamatsu-s12573-100x")
+		{
+			model = G4SipmModelFactory::getInstance()->createHamamatsuS12573100X();
+		}
+		else
+		{
+			// Treat as a .properties file path
+			model = G4SipmModelFactory::getInstance()->createConfigFileModel(modelFile);
+		}
+
+		G4Sipm* g4sipmDev = new G4Sipm(model);
+		G4SipmHousing* housing = new G4SipmHousing(g4sipmDev);
+
+		// Compute absolute world position.
+		// relPos includes a coupling_width offset from the fiber end (in the -faceDir
+		// direction) to leave room for the GODDESS coupling slab. Since g4sipm skips
+		// the external coupling, compensate by shifting the housing toward the fiber
+		// by coupling_width (i.e. add faceDir * couplingWidth).
+		// The Dz/2 offset ensures the window face (not housing center) lands at the fiber.
+		G4ThreeVector absPos = refVolume->GetObjectTranslation() + relPos
+		                       - faceDir.unit() * (housing->getDz() / 2.0 - couplingWidth);
+
+		// Compute rotation to align the housing's default face direction (+Z) with faceDir.
+		// G4SipmHousing is built with its sensitive face pointing in the +Z direction.
+		G4RotationMatrix* rot = new G4RotationMatrix();
+		G4ThreeVector defaultFace(0., 0., 1.);
+		G4ThreeVector axis = defaultFace.cross(faceDir);
+		if (axis.mag() > 1e-6)
+		{
+			G4double angle = std::acos(defaultFace.dot(faceDir.unit()));
+			rot->rotate(angle, axis.unit());
+		}
+		else if (defaultFace.dot(faceDir) < 0)
+		{
+			// Anti-parallel: rotate 180 deg around X
+			rot->rotateX(180. * CLHEP::deg);
+		}
+
+		return housing->buildAndPlace(worldPhysical, absPos, rot);
+	}
+#endif
+
+	// ---- GODDESS path (default) ----
+	PDConstructor->SetPhotonDetectorName(name);
+	PDConstructor->SetPhotonDetectorReferenceVolume(refVolume);
+	PDConstructor->SetSensitiveSurfaceNormalRelativeToReferenceVolume(faceDir);
+	PDConstructor->SetSensitiveSurfacePositionRelativeToReferenceVolume(relPos);
+	G4PhotonDetector* pd = PDConstructor->ConstructPhotonDetector(edgeLength, worldPhysical);
+	G4VPhysicalVolume* sipmPhysical = pd->GetCoating_physicalVolume();
+
+	// ---- optical coupling (GODDESS only) ----
+	OCConstructor->SetCouplingName(name + "_coupling");
+	OCConstructor->SetCouplingSurfaceNormalRelativeToBaseVolume(couplingNormal);
+	OCConstructor->SetCouplingCentrePositionRelativeToBaseVolume(couplingPos);
+	if (fiberIsBase)
+	{
+		OCConstructor->CoupleVolumes(
+			fiberPhysical, sipmPhysical,
+			edgeLength, couplingWidth, worldPhysical);
+	}
+	else
+	{
+		OCConstructor->CoupleVolumes(
+			sipmPhysical, fiberPhysical,
+			edgeLength, couplingWidth, worldPhysical);
+	}
+
+	return sipmPhysical;
+}

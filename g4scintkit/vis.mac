@@ -1,0 +1,25 @@
+
+# Visualisation
+/vis/scene/create
+/vis/open OGL 800x800-0+0
+/vis/viewer/set/viewpointThetaPhi 45 45
+/vis/viewer/set/background white
+/vis/viewer/set/lineSegmentsPerCircle 64
+/vis/viewer/flush
+
+# lighter
+/vis/viewer/set/style wireframe
+/vis/viewer/set/auxiliaryEdge false
+/vis/viewer/set/hiddenEdge  false
+
+/tracking/storeTrajectory 1
+/vis/scene/add/trajectories
+/vis/modeling/trajectories/create/drawByCharge
+/vis/modeling/trajectories/drawByCharge-0/default/setDrawStepPts false
+/vis/modeling/trajectories/drawByCharge-0/default/setStepPtsSize 2
+/vis/scene/add/hits
+/vis/scene/add/axes 0 0 0 50 cm
+/vis/scene/add/scale 1 m x
+
+/vis/scene/endOfEventAction refresh
+# /vis/scene/endOfEventAction accumulate 1
