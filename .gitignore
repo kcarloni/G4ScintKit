@@ -1,3 +1,6 @@
 build/
 output/
 .DS_Store
+
+# Local environment overrides; copy from setup_paths.sh.example.
+bash_scripts/setup_paths.sh

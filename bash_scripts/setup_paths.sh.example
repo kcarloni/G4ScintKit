@@ -1,0 +1,44 @@
+#!/bin/bash
+#
+# G4ScintKit environment setup.
+#
+# Copy this file to setup_paths.sh (gitignored) if you want a sticky local
+# config; otherwise just exporting GEANT4_INSTALL_DIR before sourcing this
+# example file is enough.
+
+# ============================================================================
+# EDIT THIS LINE: point at your Geant4 install (the directory containing
+# bin/geant4.sh). Alternatively, export GEANT4_INSTALL_DIR in your shell
+# before sourcing this file and leave the fallback as-is.
+# ============================================================================
+: "${GEANT4_INSTALL_DIR:=/path/to/your/geant4-install}"
+export GEANT4_INSTALL_DIR
+
+# ============================================================================
+# Everything below is derived automatically — no edits needed.
+# ============================================================================
+
+# Project root, derived from this script's location.
+G4SCINTKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export G4SCINTKIT
+export GODDESS="$G4SCINTKIT/goddess-package"
+export G4SIPM="$G4SCINTKIT/g4sipm"
+export SIMDIR="$G4SCINTKIT/g4scintkit"
+export BUILDDIR="$G4SCINTKIT/build/g4scintkit"
+
+if [[ ! -d "$GEANT4_INSTALL_DIR" ]]; then
+    echo "setup_paths: GEANT4_INSTALL_DIR=$GEANT4_INSTALL_DIR does not exist." >&2
+    echo "  Export it before sourcing, or edit the fallback in this file." >&2
+    return 1 2>/dev/null || exit 1
+fi
+if [[ ! -f "$GEANT4_INSTALL_DIR/bin/geant4.sh" ]]; then
+    echo "setup_paths: $GEANT4_INSTALL_DIR/bin/geant4.sh not found." >&2
+    return 1 2>/dev/null || exit 1
+fi
+
+# geant4.sh expects to be sourced from its own directory.
+_ORIG_DIR="$(pwd)"
+cd "$GEANT4_INSTALL_DIR/bin"
+source "geant4.sh"
+cd "$_ORIG_DIR"
+unset _ORIG_DIR

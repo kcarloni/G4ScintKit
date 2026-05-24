@@ -1,6 +1,11 @@
 #!/bin/bash
 
-source "$(dirname "$0")/setup_paths.sh"
+# Source the user's local setup_paths.sh if present, otherwise the
+# committed .example (which derives all paths from this script's location
+# and reads GEANT4_INSTALL_DIR from the environment).
+PATHS="$(dirname "${BASH_SOURCE[0]}")/setup_paths.sh"
+[[ -f "$PATHS" ]] || PATHS="${PATHS}.example"
+source "$PATHS"
 
 # Build g4sipm first if not already built
 if [ ! -f "$G4SIPM/build/g4sipm/libg4sipm.dylib" ]; then
@@ -9,9 +14,11 @@ fi
 
 mkdir -p "$G4SCINTKIT/build" && cd "$G4SCINTKIT/build"
 if [ -f CMakeCache.txt ]; then rm CMakeCache.txt; fi
+
+# Geant4 / Boost are discovered by find_package via standard CMake search.
+# Hint with -DGeant4_DIR=... or -DBOOST_ROOT=... here if your install lives
+# somewhere CMake won't find on its own.
 cmake \
-    -DGeant4_DIR="${GEANT4_INSTALL_DIR}/lib/Geant4-10.6.0" \
-    -DBOOST_ROOT="/opt/homebrew/Cellar/boost/" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DG4SIPM_DIR="$G4SIPM" \
     "$G4SCINTKIT"
