@@ -1,0 +1,6 @@
+[submodule "goddess-package"]
+	path = goddess-package
+	url = git@github.com:kcarloni/goddess-package.git
+[submodule "g4sipm"]
+	path = g4sipm
+	url = git@github.com:kcarloni/g4sipm.git
