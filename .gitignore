@@ -1,5 +1,6 @@
 build/
 output/
+G4ScintKit.jl/examples/out/
 .DS_Store
 
 # Local environment overrides; copy from setup_paths.sh.example.
