@@ -1,5 +1,5 @@
-build/
-output/
+/build/
+/output/
 G4ScintKit.jl/examples/out/
 .DS_Store
 
