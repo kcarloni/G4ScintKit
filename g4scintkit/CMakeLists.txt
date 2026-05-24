@@ -69,7 +69,11 @@ if(DEFINED G4SIPM_DIR)
 endif()
 
 ########## Add libraries of the current project ##########
-set(LIBS G4PropertyFileReadInTools G4Scintillator G4Fibre G4GeneralParticleSource G4PhotonDetector DataProcessing)
+# DataProcessing is the top of the goddess-package dependency graph; linking
+# it pulls in the other five sub-libraries (G4PropertyFileReadInTools,
+# G4Scintillator, G4Fibre, G4GeneralParticleSource, G4PhotonDetector)
+# transitively, and propagates each one's PUBLIC include directories.
+set(LIBS DataProcessing)
 
 ########## The project ##########
 # Get list of needed header and source files:
