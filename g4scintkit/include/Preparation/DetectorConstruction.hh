@@ -65,14 +65,6 @@ public:
 	, Material_Aluminum(0)
 	, Material_Lead(0)
 	, WorldDimensions(G4ThreeVector(NAN, NAN, NAN))
-	, ScintiPropertyFile(Messenger->GetScintillatorPropertyFile())
-	, WrappingPropertyFile(Messenger->GetWrappingPropertyFile())
-	, ScintiDimensions(G4ThreeVector(NAN, NAN, NAN))
-	, ScintiTransform(G4Transform3D())
-	, LightGuidingFibrePropertyFile(Messenger->GetLightGuidingFibrePropertyFile())
-	, WLSFibrePropertyFile(Messenger->GetWLSFibrePropertyFile())
-	, ScintiFibrePropertyFile(Messenger->GetScintiFibrePropertyFile())
-	, OpticalCementPropertyFile(Messenger->GetOpticalCementPropertyFile())
 	, FibreStartPoint(G4ThreeVector(NAN, NAN, NAN))
 	, FibreEndPoint(G4ThreeVector(NAN, NAN, NAN))
 	{
@@ -121,12 +113,6 @@ private:
 	void DeleteMaterials();
 	void DeleteMaterialPropertiesTables();
 
-	// ---- manifest seam (see GeometryManifest.hh) ----
-	// BuildManifest_* emit a flat geometry description from a hard-coded named
-	// setup; PlaceManifest is the generic interpreter that builds the Geant4
-	// geometry from any manifest (named-setup or file-sourced).
-	void BuildManifest_B1(GeometryManifest& manifest);
-	void BuildManifest_B2(GeometryManifest& manifest);
 	void PlaceManifest(const GeometryManifest& manifest,
 	                   G4VPhysicalVolume* world_physical,
 	                   G4LogicalVolume* world_logical);
@@ -150,17 +136,6 @@ private:
 	// the world
 	G4ThreeVector WorldDimensions;
 
-	// Scintillator
-	G4String ScintiPropertyFile;
-	G4String WrappingPropertyFile;
-	G4ThreeVector ScintiDimensions;
-	G4Transform3D ScintiTransform;
-
-	// fibre
-	G4String LightGuidingFibrePropertyFile;
-	G4String WLSFibrePropertyFile;
-	G4String ScintiFibrePropertyFile;
-	G4String OpticalCementPropertyFile;
 	G4ThreeVector FibreStartPoint;
 	G4ThreeVector FibreEndPoint;
 	G4double FibreEndReflectivity;

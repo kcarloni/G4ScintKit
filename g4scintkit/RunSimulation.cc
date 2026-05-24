@@ -55,15 +55,7 @@ G4int NumEvents;
 G4bool UsePhotonListSource;
 G4bool UseParticleListSource;
 G4String PSInputFile;
-G4ThreeVector ScintillatorDimensions;
 G4bool SearchOverlaps;
-G4String ScintiFile;
-G4String TwinTileReflectorFile;
-G4String WrappingFile;
-G4String LightGuidingFibreFile;
-G4String WLSFibreFile;
-G4String ScintiFibreFile;
-G4String CementFile;
 G4String OutDir;
 G4String Phrase;
 G4int ControlVerbosity;
@@ -73,9 +65,6 @@ G4int TrackingVerbosity;
 G4int HadronicVerbosity;
 G4bool DontTrackOpticalPhotons;
 
-G4String SetupIdentificationString;
-G4double LeadSheetThickness;
-G4double AluminumSheetThickness;
 G4bool UseG4Sipm;
 G4String SipmModelFile;
 G4int RunID;
@@ -95,15 +84,7 @@ int main(int argc, char** argv)
 	UsePhotonListSource = false;
 	UseParticleListSource = false;
 	PSInputFile = "";
-	ScintillatorDimensions = G4ThreeVector(NAN, NAN, NAN);
 	SearchOverlaps = false;
-	ScintiFile = "";
-	TwinTileReflectorFile = "";
-	WrappingFile = "";
-	LightGuidingFibreFile = "";
-	WLSFibreFile = "";
-	ScintiFibreFile = "";
-	CementFile = "";
 	OutDir = "";
 	G4String dataSubOutDir = "Data/";
 	Phrase = "";
@@ -113,9 +94,6 @@ int main(int argc, char** argv)
 	TrackingVerbosity = 0;
 	HadronicVerbosity = 0;
 	DontTrackOpticalPhotons = false;
-	SetupIdentificationString = "";
-	LeadSheetThickness = 0 * CLHEP::mm;
-	AluminumSheetThickness = 0 * CLHEP::mm;
 	UseG4Sipm = false;
 	SipmModelFile = "";
 	RunID = -1;
@@ -171,19 +149,8 @@ int main(int argc, char** argv)
 	SimulationMessenger * simulationMessenger = new SimulationMessenger(goddessMessenger);
 	simulationMessenger->SetUsePhotonListSource(UsePhotonListSource);
 	simulationMessenger->SetUseParticleListSource(UseParticleListSource);
-	simulationMessenger->SetScintillatorDimensions(ScintillatorDimensions);
 	simulationMessenger->SetSearchOverlaps(SearchOverlaps);
-	simulationMessenger->SetScintillatorPropertyFile(ScintiFile);
-	simulationMessenger->SetTwinTileReflectorPropertyFile(TwinTileReflectorFile);
-	simulationMessenger->SetWrappingPropertyFile(WrappingFile);
-	simulationMessenger->SetLightGuidingFibrePropertyFile(LightGuidingFibreFile);
-	simulationMessenger->SetWLSFibrePropertyFile(WLSFibreFile);
-	simulationMessenger->SetScintiFibrePropertyFile(ScintiFibreFile);
-	simulationMessenger->SetOpticalCementPropertyFile(CementFile);
 	simulationMessenger->SetTrackPhotons(!DontTrackOpticalPhotons);
-	simulationMessenger->SetSetupIdentificationString(SetupIdentificationString);
-	simulationMessenger->SetLeadSheetThickness(LeadSheetThickness);
-	simulationMessenger->SetAluminumSheetThickness(AluminumSheetThickness);
 	simulationMessenger->SetUseG4Sipm(UseG4Sipm);
 	simulationMessenger->SetSipmModelFile(SipmModelFile);
 	simulationMessenger->SetQuiet(Quiet);
@@ -192,7 +159,7 @@ int main(int argc, char** argv)
 	G4String h5OutFile = assembleOutputFileName(OutDir + dataSubOutDir, "g4sim.h5", Phrase);
 	simulationMessenger->SetHDF5FileName(h5OutFile);
 
-	// geometry manifest: optional input file, and the per-run dump path
+	// geometry manifest input file and the per-run dump path
 	simulationMessenger->SetManifestInputFile(ManifestFile);
 	simulationMessenger->SetManifestDumpFile(OutDir + dataSubOutDir + "geometry.manifest");
 
@@ -472,59 +439,10 @@ void ParseCommandLine(int argc, char** argv)
 				G4cout << "Running in batch mode!" << G4endl;
 				continue;
 			}
-			if(getStringlikeOption(arg, argv, "--setupIDString", SetupIdentificationString, "setup id string")) continue;
 			if(getBooleanOption(arg, argv, "--usePhotonList", UsePhotonListSource)) continue;
 			if(getBooleanOption(arg, argv, "--useParticleList", UseParticleListSource)) continue;
 			if(getStringlikeOption(arg, argv, "--particleSourceInput", PSInputFile, "particle source input file")) continue;
-			if(strcmp(argv[arg], "--tileDims") == 0){
-				if(argv[arg+1] && argv[arg+1][0] != '-'){
-					G4double vx = NAN;
-					G4double vy = NAN;
-					G4double vz = NAN;
-
-					sscanf(argv[arg+1], "(%lf,%lf,%lf)", &vx, &vy, &vz);
-
-					ScintillatorDimensions = G4ThreeVector(
-						vx * CLHEP::mm,
-						vy * CLHEP::mm,
-						vz * CLHEP::mm
-					);
-					arg++;
-
-					continue;
-				}
-				else{
-					G4cout << "No scintillator dimensions specified!" << G4endl;
-					Usage();
-					exit(-1);
-				}
-			}
-			if (strcmp(argv[arg], "--leadSheetThickness") == 0){
-				if (argv[arg+1] && (argv[arg+1])[0] != '-'){
-					G4double v = atof(argv[arg+1]);
-					LeadSheetThickness = v * CLHEP::mm;
-					arg++;
-
-					continue;
-				}
-			}
-			if (strcmp(argv[arg], "--aluminumSheetThickness") == 0){
-				if (argv[arg+1] && (argv[arg+1])[0] != '-'){
-					G4double v = atof(argv[arg+1]);
-					AluminumSheetThickness = v * CLHEP::mm;
-					arg++;
-
-					continue;
-				}
-			}
 			if(getBooleanOption(arg, argv, "--overlap", SearchOverlaps, "Searching for overlaps in the setup.")) continue;
-			if(getStringlikeOption(arg, argv, "--scinti", ScintiFile, "scinti property file")) continue;
-			if(getStringlikeOption(arg, argv, "--twin", TwinTileReflectorFile, "twin tile reflector property file")) continue;
-			if(getStringlikeOption(arg, argv, "--wrapping", WrappingFile, "wrapping property file")) continue;
-			if(getStringlikeOption(arg, argv, "--lgFibre", LightGuidingFibreFile, "fibre property file")) continue;
-			if(getStringlikeOption(arg, argv, "--wlsFibre", WLSFibreFile, "fibre property file")) continue;
-			if(getStringlikeOption(arg, argv, "--scintiFibre", ScintiFibreFile, "fibre property file")) continue;
-			if(getStringlikeOption(arg, argv, "--cement", CementFile, "cement property file")) continue;
 			if(getStringlikeOption(arg, argv, "--outDir", OutDir, "output directory")) continue;
 			if(getStringlikeOption(arg, argv, "--add", Phrase, "phrase to be added to filename")) continue;
 			if(getIntegerOption(arg, argv, "--controlVerbose", ControlVerbosity, "control verbosity")) continue;
@@ -712,13 +630,8 @@ void Help()
 	G4cout << "            --particleSourceInput <filename>: Use <filename> as input for the particle source."                                            << G4endl;
 	G4cout << "                                              This can either be a macro for the General Particle Source (if the \"--usePhotonList\""      << G4endl;
 	G4cout << "                                              option IS NOT set) or a list with photons (if the \"--usePhotonList\" option IS set)."       << G4endl;
-	G4cout << "            --tileDims <(X,Y,Z)>            : Use different dimensions (in mm) for the scintillator tile than the hardcoded ones."         << G4endl;
 	G4cout << "            --overlap                       : Search for overlaps in the setup. Default is: \"false\""                                     << G4endl;
-	G4cout << "            --scinti <filename.properties>  : Get material properties of the scintillator from <filename.properties>"                      << G4endl;
-	G4cout << "            --twin <filename.properties>    : Get material properties of the scintillator twin tile reflector from <filename.properties>"  << G4endl;
-	G4cout << "            --wrapping <filename.properties>: Get material properties of the wrapping from <filename.properties>"                          << G4endl;
 	G4cout << "            --fibre <filename.properties>   : Get material properties of the fibre from <filename.properties>"                             << G4endl;
-	G4cout << "            --cement <filename.properties>  : Get material properties of the optical cement from <filename.properties>"                    << G4endl;
 	G4cout << "            --outDir <directory>            : Define output directory. This directory must exisit! Default is: \"./\""                     << G4endl;
 	G4cout << "            --add <phrase>                  : Add <phrase> to HDF5 output filename (simulation.h5)."                                       << G4endl;
 	G4cout << "            --controlVerbose <number>       : Specify the GEANT4 verbosity level set using \"/control/verbose\". Default is: \"0\""        << G4endl;
