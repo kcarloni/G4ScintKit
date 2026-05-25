@@ -210,8 +210,11 @@ void ManifestFile::Write(const GeometryManifest& m, const G4String& path)
 			  << " coupling_normal=" << vecStr(sp.coupling_normal)
 			  << " coupling_pos=" << vecStr(sp.coupling_pos)
 			  << " coupling_width=" << numStr(sp.coupling_width)
-			  << " fiber_is_base=" << (sp.fiber_is_base ? "1" : "0")
-			  << "\n";
+			  << " fiber_is_base=" << (sp.fiber_is_base ? "1" : "0");
+			// Optional: emitted only when set, mirroring the Julia writer so
+			// pre-C2 manifests stay byte-identical.
+			if (!sp.model.empty()) f << " model=" << sp.model;
+			f << "\n";
 			break;
 		}
 		}
@@ -323,6 +326,7 @@ GeometryManifest ManifestFile::Read(const G4String& path)
 			sp.coupling_pos    = vecOf(kv, "coupling_pos");
 			sp.coupling_width  = numOf(kv, "coupling_width");
 			sp.fiber_is_base   = boolOf(kv, "fiber_is_base");
+			sp.model           = optStr(kv, "model");
 			m.placements.push_back(PlacementEntry::Sipm(sp));
 		}
 		else if (type == "CASING")

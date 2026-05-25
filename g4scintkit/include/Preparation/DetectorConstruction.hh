@@ -76,9 +76,11 @@ public:
 	 */
 	~DetectorConstruction()
 	{
+		// Materials and MPTs in G4Material::theMaterialTable are owned by
+		// Geant4 (and, when g4sipm is in use, by g4sipm's MaterialFactory
+		// singleton). Hand-deleting them here causes a double-free at exit.
+		// Leak-at-exit is fine; the OS reclaims on process tear-down.
 		CleanUp();
-		DeleteMaterialPropertiesTables();
-		DeleteMaterials();
 	}
 
 
@@ -93,9 +95,12 @@ private:
 	void DefineMaterialProperties();
 
 	// Construct a photon detector (GODDESS G4PhotonDetector or g4sipm G4SipmHousing)
-	// and its optical coupling to the fiber.
-	// In GODDESS mode, uses OCConstructor to build the coupling slab.
-	// In g4sipm mode, the housing's built-in epoxy window serves as optical coupling.
+	// and its optical coupling to the fiber. Dispatch is per-SiPM via `model`:
+	//   - non-empty `model` selects a g4sipm SiPM model (built via
+	//     G4SipmModelFactory); the housing's epoxy window is the optical
+	//     interface and no external coupling slab is built;
+	//   - empty `model` falls back to the GODDESS G4PhotonDetector + a
+	//     coupling slab built by OCConstructor.
 	G4VPhysicalVolume* ConstructSiPM(
 		const G4String& name,
 		G4VPhysicalVolume* refVolume,
@@ -107,11 +112,10 @@ private:
 		const G4ThreeVector& couplingNormal,
 		const G4ThreeVector& couplingPos,
 		G4double couplingWidth,
-		G4bool fiberIsBase = true);
+		G4bool fiberIsBase = true,
+		const G4String& model = "");
 
 	void CleanUp();
-	void DeleteMaterials();
-	void DeleteMaterialPropertiesTables();
 
 	void PlaceManifest(const GeometryManifest& manifest,
 	                   G4VPhysicalVolume* world_physical,

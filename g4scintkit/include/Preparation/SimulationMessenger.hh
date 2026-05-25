@@ -46,8 +46,6 @@ public:
 	, CurrentRunId(-1)
 	, CurrentCsvEventId(-1)
 	, Quiet(false)
-	, UseG4Sipm(false)
-	, SipmModelFile("")
 	, GPSFile("inj.dat")
 	, DataFile("events.dat")
 	, ControlFile("control.dat")
@@ -102,8 +100,6 @@ private:
 	G4int CurrentRunId;
 	G4int CurrentCsvEventId;
 	G4bool Quiet;
-	G4bool UseG4Sipm;
-	G4String SipmModelFile;
 	G4String GPSFile;
 	G4String DataFile;
 	G4String ControlFile;
@@ -216,28 +212,6 @@ public:
 	 */
 	G4String GetControlFileName() const
 	{ return ControlFile; }
-
-	/**
-	 *  Set whether to use G4Sipm instead of G4PhotonDetector.
-	 */
-	void SetUseG4Sipm(G4bool useG4Sipm)
-	{ UseG4Sipm = useG4Sipm; }
-	/**
-	 *  @return G4bool, whether to use G4Sipm instead of G4PhotonDetector
-	 */
-	G4bool GetUseG4Sipm() const
-	{ return UseG4Sipm; }
-
-	/**
-	 *  Set the SiPM model file path (or empty string for the generic model).
-	 */
-	void SetSipmModelFile(G4String sipmModelFile)
-	{ SipmModelFile = sipmModelFile; }
-	/**
-	 *  @return path to the SiPM model properties file (empty = generic model)
-	 */
-	G4String GetSipmModelFile() const
-	{ return SipmModelFile; }
 
 	/**
 	 *  @return pointer to the HDF5 output writer

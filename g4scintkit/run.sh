@@ -41,8 +41,8 @@ Run settings:
 
 Injection (General Particle Source):
   --injparticle <name>      e.g. "mu-", "e-", "gamma" (default: "mu-").
-  --injenergy <"E unit">    e.g. "3 GeV" (default: "3 GeV"). Use _ in place of
-                            space if you can't quote (e.g. 3_GeV).
+  --injenergy <"E unit">    e.g. "3 GeV" (default: "3 GeV"). With --key=value
+                            the quotes aren't needed (e.g. --injenergy="3 GeV").
   --injpos "<x y z unit>"   Plane center (default: "0 200 0 mm").
   --injdir "<x y z>"        Surface normal direction (default: "0 -1 0").
   --injthetamin / --injthetamax / --injphimin / --injphimax  "<angle unit>"
@@ -52,8 +52,8 @@ Particle list source (overrides GPS):
   --particlelist <csv>      CSV of arbitrary primaries (see C++ Help()).
 
 SiPM:
-  --use_g4sipm true|false   Use g4sipm digitization instead of GODDESS PD.
-  --sipmmodel <name|path>   SiPM model alias or full path.
+  (Per-SiPM g4sipm model selection now lives in the manifest's SIPM
+   `model=<alias>` field; see G4ScintKit.jl SIPM_MODELS.)
 
 Meta:
   --help, -h                Show this message and exit.
@@ -66,8 +66,6 @@ EOF
 NumberOfEvents="1"
 NeventsSet=false
 TrackOpticalPhotons="false"
-UseG4Sipm="false"
-SipmModel=""
 ParticleListFile=""
 ManifestFile=""
 
@@ -92,6 +90,18 @@ Inj_Rectangle_Length="0 mm"
 OutputDirectory=""
 
 # ===============================================
+
+# Normalize `--key=value` into two tokens so the case loop below only
+# needs to handle the separate-token form. Long options only.
+_normalized=()
+for _a in "$@"; do
+    case "$_a" in
+        --*=*) _normalized+=("${_a%%=*}" "${_a#*=}") ;;
+        *)     _normalized+=("$_a") ;;
+    esac
+done
+set -- "${_normalized[@]}"
+unset _normalized _a
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -119,17 +129,12 @@ while [[ $# -gt 0 ]]; do
         --particlelist) ParticleListFile="$2"; shift 2 ;;
         # geometry manifest
         --manifest)     ManifestFile="$2"; shift 2 ;;
-        # sipm
-        --use_g4sipm)   UseG4Sipm="$2"; shift 2 ;;
-        --sipmmodel)    SipmModel="$2"; shift 2 ;;
         --seed)         Seed="$2"; shift 2 ;;
         --quiet)        Quiet="$2"; shift 2 ;;
         #
         *)              echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
-
-Inj_Energy="${Inj_Energy/_/ }"
 
 # Resolve seed: "clock" uses system time, otherwise use the value as-is
 if [ "$Seed" = "clock" ]; then
@@ -155,20 +160,6 @@ die() { echo "Error: $*" >&2; echo "       (run with --help for usage)" >&2; exi
 : "${BUILDDIR:?BUILDDIR not set — did you source bash_scripts/setup_paths.sh?}"
 : "${GODDESS:?GODDESS not set — did you source bash_scripts/setup_paths.sh?}"
 [ -x "$BUILDDIR/g4scint" ] || die "g4scint binary not found or not executable: $BUILDDIR/g4scint (did you run bash_scripts/2_compile.sh?)"
-
-# SiPM model alias resolution
-resolve_sipmmodel() {
-    case "$1" in
-        generic)                    echo "generic" ;;
-        hamamatsu-s10362-11-100c)   echo "hamamatsu-s10362-11-100c" ;;
-        hamamatsu-s10362-33-100c)   echo "hamamatsu-s10362-33-100c" ;;
-        hamamatsu-s10362-33-050c)   echo "hamamatsu-s10362-33-050c" ;;
-        hamamatsu-s12651-050)       echo "hamamatsu-s12651-050" ;;
-        hamamatsu-s12573-100c)      echo "hamamatsu-s12573-100c" ;;
-        hamamatsu-s12573-100x)      echo "hamamatsu-s12573-100x" ;;
-        *)                          echo "$1" ;;   # pass-through for full file paths
-    esac
-}
 
 GPS_Filename="inj.data"
 
@@ -251,14 +242,6 @@ echo "will build geometry from manifest: $ManifestFile"
 echo "--manifest $ManifestFile" >> "$InitFile"
 if $Quiet; then
     echo "--quiet" >> "$InitFile"
-fi
-if $UseG4Sipm; then
-    echo "will use G4SiPM for photon detection"
-    echo "--useG4Sipm" >> "$InitFile"
-    if [ -n "$SipmModel" ]; then
-        Set_SipmModel=$(resolve_sipmmodel "$SipmModel")
-        echo "--sipmModel $Set_SipmModel" >> "$InitFile"
-    fi
 fi
 
 # ------ write provenance file -----

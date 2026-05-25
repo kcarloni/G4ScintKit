@@ -310,10 +310,11 @@ void EventAction::processEventData(const G4Event* theEvent)
 
 #ifdef USE_G4SIPM
 	// --- G4SiPM hit, digi, and voltage trace data ---
+	// Probe the hit collections unconditionally — the dynamic_cast filters
+	// out non-g4sipm collections, so this is a no-op when no g4sipm housing
+	// was placed during DetectorConstruction.
 	G4SipmPhotonHitCount = 0;
-	if (Messenger->GetUseG4Sipm())
 	{
-		// Collect G4SiPM hit times (replaces GODDeSS PhotonDetectorWasHit path)
 		G4HCofThisEvent* hCof = theEvent->GetHCofThisEvent();
 		if (hCof != nullptr) {
 			for (int i = 0; i < hCof->GetCapacity(); ++i) {
@@ -341,7 +342,9 @@ void EventAction::processEventData(const G4Event* theEvent)
 	h5Writer->addSipmHitSummary(EventID, nHits, firstTime, q10Time, q90Time);
 
 #ifdef USE_G4SIPM
-	if (Messenger->GetUseG4Sipm())
+	// Probed unconditionally — Digitize() is a no-op when no g4sipm
+	// digitizer modules are registered, and the digi-collection cast below
+	// filters non-g4sipm entries.
 	{
 		// Run all digitizer modules
 		G4DigiManager* digiManager = G4DigiManager::GetDMpointer();

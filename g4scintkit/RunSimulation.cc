@@ -65,8 +65,6 @@ G4int TrackingVerbosity;
 G4int HadronicVerbosity;
 G4bool DontTrackOpticalPhotons;
 
-G4bool UseG4Sipm;
-G4String SipmModelFile;
 G4int RunID;
 G4int Seed;
 G4bool Quiet;
@@ -94,8 +92,6 @@ int main(int argc, char** argv)
 	TrackingVerbosity = 0;
 	HadronicVerbosity = 0;
 	DontTrackOpticalPhotons = false;
-	UseG4Sipm = false;
-	SipmModelFile = "";
 	RunID = -1;
 	Seed = -1;
 	Quiet = false;
@@ -151,8 +147,6 @@ int main(int argc, char** argv)
 	simulationMessenger->SetUseParticleListSource(UseParticleListSource);
 	simulationMessenger->SetSearchOverlaps(SearchOverlaps);
 	simulationMessenger->SetTrackPhotons(!DontTrackOpticalPhotons);
-	simulationMessenger->SetUseG4Sipm(UseG4Sipm);
-	simulationMessenger->SetSipmModelFile(SipmModelFile);
 	simulationMessenger->SetQuiet(Quiet);
 
 	// compose the HDF5 output file name
@@ -454,11 +448,6 @@ void ParseCommandLine(int argc, char** argv)
 			{
 				G4cout << "--------DontTrackOpticalPhotons " << DontTrackOpticalPhotons << G4endl; continue;
 			}
-			if(getBooleanOption(arg, argv, "--useG4Sipm", UseG4Sipm, "Using G4SiPM for photon detection."))
-			{
-				G4cout << "--------UseG4Sipm " << UseG4Sipm << G4endl; continue;
-			}
-			if(getStringlikeOption(arg, argv, "--sipmModel", SipmModelFile, "SiPM model file")) continue;
 			if(getStringlikeOption(arg, argv, "--manifest", ManifestFile, "geometry manifest file")) continue;
 			if(getIntegerOption(arg, argv, "--runID", RunID, "run ID")) continue;
 			if(getIntegerOption(arg, argv, "--seed", Seed, "random seed")) continue;

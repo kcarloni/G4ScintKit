@@ -98,6 +98,10 @@ struct WrapEntry
 
 
 /// A SiPM photon detector plus its optical coupling to a fibre.
+/// `model` (optional, default empty) names a g4sipm SiPM model alias —
+/// when non-empty, the SiPM is constructed via G4SipmModelFactory and the
+/// GODDESS coupling slab is skipped (g4sipm's built-in epoxy window is the
+/// optical interface). Empty `model` falls back to the GODDESS PD path.
 struct SipmEntry
 {
 	G4String       name;
@@ -110,6 +114,7 @@ struct SipmEntry
 	G4ThreeVector  coupling_pos;
 	G4double       coupling_width;
 	G4bool         fiber_is_base;
+	G4String       model;           ///< g4sipm model alias ("" = GODDESS PD)
 
 	SipmEntry()
 	: edge_length(0.), coupling_width(0.), fiber_is_base(true)

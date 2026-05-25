@@ -253,12 +253,14 @@ void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
 				sp.face_dir,
 				sp.rel_pos,
 				sp.edge_length,
+
 				world_physical,
 				lookupVolume(physicalOf, sp.fiber),
 				sp.coupling_normal,
 				sp.coupling_pos,
 				sp.coupling_width,
-				sp.fiber_is_base);
+				sp.fiber_is_base,
+				sp.model);
 			break;
 		}
 		}
@@ -480,27 +482,14 @@ void DetectorConstruction::CleanUp()
 }
 
 
-void DetectorConstruction::DeleteMaterialPropertiesTables()
-{
-	G4MaterialTable* matTable = (G4MaterialTable*)G4Material::GetMaterialTable();   // getting the table of materials from Geant
-	for(size_t i = 0; i < matTable->size(); i++) delete (*(matTable))[i]->GetMaterialPropertiesTable();
-}
-
-
-void DetectorConstruction::DeleteMaterials()
-{
-	G4MaterialTable* matTable = (G4MaterialTable*) G4Material::GetMaterialTable();   // getting the table of materials from Geant
-	for(size_t i = 0; i < matTable->size(); i++) delete (*(matTable))[i];
-	matTable->clear();
-}
-
-
 /**
  *  Construct the photon detector and its optical coupling to the fiber.
  *
- *  In GODDESS mode the OCConstructor builds a coupling slab between fiber and detector.
- *  In g4sipm mode the housing's built-in epoxy window (n=1.5) serves as the optical
- *  interface, so no external coupling is constructed.
+ *  Dispatch is per-SiPM via `model`: a non-empty alias selects a g4sipm
+ *  SiPM model (via G4SipmModelFactory) and the housing's built-in epoxy
+ *  window (n=1.5) serves as the optical interface — no external coupling
+ *  slab is constructed. An empty `model` falls back to the GODDESS
+ *  G4PhotonDetector path with an OCConstructor-built coupling slab.
  */
 G4VPhysicalVolume* DetectorConstruction::ConstructSiPM(
 	const G4String& name,
@@ -513,50 +502,52 @@ G4VPhysicalVolume* DetectorConstruction::ConstructSiPM(
 	const G4ThreeVector& couplingNormal,
 	const G4ThreeVector& couplingPos,
 	G4double couplingWidth,
-	G4bool fiberIsBase)
+	G4bool fiberIsBase,
+	const G4String& model)
 {
 #ifdef USE_G4SIPM
-	if (Messenger->GetUseG4Sipm())
+	if (!model.empty())
 	{
 		// ---- g4sipm path ----
-		G4String modelFile = Messenger->GetSipmModelFile();
-		G4SipmModel* model = nullptr;
+		G4SipmModel* g4sipmModel = nullptr;
 
-		if (modelFile.empty() || modelFile == "generic")
+		if (model == "generic")
 		{
-			model = G4SipmModelFactory::getInstance()->createGenericSipmModel();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createGenericSipmModel();
 		}
-		else if (modelFile == "hamamatsu-s10362-11-100c")
+		else if (model == "hamamatsu-s10362-11-100c")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036211100();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS1036211100();
 		}
-		else if (modelFile == "hamamatsu-s10362-33-100c")
+		else if (model == "hamamatsu-s10362-33-100c")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036233100();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS1036233100();
 		}
-		else if (modelFile == "hamamatsu-s10362-33-050c")
+		else if (model == "hamamatsu-s10362-33-050c")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS1036233050();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS1036233050();
 		}
-		else if (modelFile == "hamamatsu-s12651-050")
+		else if (model == "hamamatsu-s12651-050")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS12651050();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS12651050();
 		}
-		else if (modelFile == "hamamatsu-s12573-100c")
+		else if (model == "hamamatsu-s12573-100c")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS12573100C();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS12573100C();
 		}
-		else if (modelFile == "hamamatsu-s12573-100x")
+		else if (model == "hamamatsu-s12573-100x")
 		{
-			model = G4SipmModelFactory::getInstance()->createHamamatsuS12573100X();
+			g4sipmModel = G4SipmModelFactory::getInstance()->createHamamatsuS12573100X();
 		}
 		else
 		{
-			// Treat as a .properties file path
-			model = G4SipmModelFactory::getInstance()->createConfigFileModel(modelFile);
+			throw std::runtime_error(
+			    "ConstructSiPM: SiPM '" + std::string(name) + "' has unknown model '"
+			    + std::string(model) + "' (extend the alias switch in "
+			    "DetectorConstruction::ConstructSiPM, or use \"\" for GODDESS PD)");
 		}
 
-		G4Sipm* g4sipmDev = new G4Sipm(model);
+		G4Sipm* g4sipmDev = new G4Sipm(g4sipmModel);
 		G4SipmHousing* housing = new G4SipmHousing(g4sipmDev);
 
 		// Compute absolute world position.
