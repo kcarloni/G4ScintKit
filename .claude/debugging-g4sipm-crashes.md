@@ -17,8 +17,8 @@ and remains open**.
 | Bug | Where | Status |
 |---|---|---|
 | **A** | `DetectorConstruction::~DetectorConstruction` blast-deletes the global G4 material table at exit, double-freeing materials owned by g4sipm's `MaterialFactory` singleton. SIGSEGV at program teardown. | **Fixed** — destructor no longer deletes globals. |
-| **B** | g4sipm + `/tracking/storeTrajectory 1` triggers a memory corruption that lands on some optical-process MPT during `BuildPhysicsTable`. ~100% SIGSEGV in Release. **Root cause not isolated.** A partial mitigation exists (deactivate `kRayleigh + kMieHG` globally; halves crash rate, fully resolves bug C) but is **not applied** — see "Why the mitigation is on the shelf" below. | **Open.** |
-| **C** | g4sipm + photon tracking on → `H5::H5Location::createDataSet` throws `GroupIException` at `RunAction::EndOfRunAction`. Dataset path or group handle is invalid. Co-located with bug B: applying the bug-B mitigation fully resolves it; without it, bug B normally fires first anyway. | **Open** (gated on bug B). |
+| **B** | Double-owner UAF on BisphenolA's MPT. `MaterialFactory::getEpoxy` allocates an MPT and attaches it to BisphenolA. Per-SiPM model code then calls `new G4Material(name, density, BisphenolA)` (derived-material constructor) — `CopyPointersOfBaseMaterial` copies BisphenolA's MPT *pointer* into the derived windowMaterial. The subsequent `windowMaterial->SetMaterialPropertiesTable(mpt)` does `delete fMaterialPropertiesTable` first, which deletes BisphenolA's MPT. BisphenolA keeps the dangling pointer in `theMaterialTable`; the freed slot is reused by a later allocation (G4SipmHousing or its container G4LogicalVolume); `G4OpRayleigh::BuildPhysicsTable` later iterates BisphenolA and dereferences the now-overlaid bytes → SIGSEGV. | **Fixed** — see "Fix" below. |
+| **C** | g4sipm + photon tracking on → `H5::H5Location::createDataSet` throws `GroupIException` at `RunAction::EndOfRunAction`. Dataset path or group handle is invalid. Co-located with bug B: same dangling MPT, different downstream consumer. | **Fixed** — resolved by the bug-B fix, as predicted. |
 
 Plus a separable bug found during the hunt:
 
@@ -246,19 +246,176 @@ is not required.
 - ASan-instrumented user code + Geant4-as-stock-dylib does **not** flag any
   bad write. The G4Fibre container-overflow read we already fixed (see below)
   was unrelated; ASan with that fix in place is clean.
-- The corruption manifests in *some* MPT in the global material table by the
-  time `BuildPhysicsTable` walks it.
-- Either (a) the bad write happens inside an uninstrumented Geant4 .dylib, or
-  (b) a UB in goddess/g4scintkit interacts with `-O3` aliasing assumptions
-  to produce the write only in Release.
+- The previous session's hypothesis was *"an MPT pointer in
+  `theMaterialTable` is clobbered between geometry construction and
+  `BuildPhysicsTable`."* The May 2026 follow-up below **disproves** that —
+  pointers are stable; the bytes pointed to are not.
 
-Hypothesis we **could not pin down** in this session: there's likely a
-sibling OOB write in goddess (the G4Fibre OOB read was indicative). Locating
-it would require either (i) building Geant4 itself with ASan (multi-hour),
-(ii) reproducing under valgrind on Linux, or (iii) a focused audit of every
-`solids.push_back` / `boost::any` cast site in `G4Fibre.cc`, `FibreConstructor*.icc`,
-and `G4Scintillator/*` for analogous read-past-`size()` or write-past-end
-patterns.
+### May 2026 follow-up — victim identified
+
+Instrumentation added in `g4scintkit/include/Preparation/MaterialTableSnapshot.hh`:
+- `DumpMaterialTableMPTs(tag)` — called at end of `Construct()`, start
+  and end of `ConstructProcess()`, start and end of `SetCuts()`. Writes
+  `(material*, mpt*, name)` per material to a file. Gated by env
+  `G4SCINTKIT_MPT_SNAPSHOT_PATH`. (`G4SCINTKIT_MPT_SNAPSHOT_BYTES=1`
+  also dumps the first 192 bytes of each MPT, but enabling it perturbs
+  heap layout enough to mask bug B — useful for healthy-run inspection
+  only.)
+- `InstallCrashDumper()` — async-signal-safe SIGSEGV/SIGBUS handler
+  installed from `main`. On fault, dumps the faulting address and
+  per-MPT bytes for every material.
+
+Two reproducer runs of the deterministic case (`storeTrajectory 1` +
+`sipm_model="hamamatsu-s12573-100c"`):
+
+1. **All 5 pointer snapshots are byte-identical.** BisphenolA's MPT
+   pointer is `0x914b475c0` from `after Construct()` through
+   `leaving SetCuts()`. No MPT pointer in `theMaterialTable` is ever
+   reassigned to a wild value at any of the snapshot points.
+2. **At crash time, the bytes at `0x914b475c0` are a `G4SipmHousing`
+   object, not an MPT.** Concretely:
+   - Byte 0: a vptr in normal heap range.
+   - Bytes 8-20: ASCII `"g4sipmHousing\0"` — short-string-optimised
+     name set by `G4SipmHousing::G4SipmHousing` (see
+     `g4sipm/g4sipm/src/housing/G4SipmHousing.cc:22`,
+     `setName("g4sipmHousing")`).
+   - Bytes 0x40-0x77: a sipm pointer plus seven `double`s matching the
+     housing's window/package dimensions for a 6×6 mm Hamamatsu
+     S12573-100C (`0x4018000000000000 = 6.0`, `0x3fc9999999999999 = 0.2`,
+     etc.).
+3. The faulting address loaded by `ConstPropertyExists` was
+   `0x97fffea49100041d` — junk read from the now-bogus
+   `G4MaterialConstPropertyName` member vector inside the overlaid object.
+
+So the bug is: **BisphenolA's MPT heap slot has been overlaid by a
+later allocation at the same address.** The MPT pointer in
+`theMaterialTable` was never reassigned; the slot beneath it was.
+
+### Root cause (confirmed by snapshot-byte bisection)
+
+Per-material byte snapshots taken at:
+1. inside `getEpoxy`, after `new G4MaterialPropertiesTable()` returns;
+2. inside `getEpoxy`, after `mpt->AddProperty("RINDEX", ...)`;
+3. inside `getEpoxy`, after `epoxy->SetMaterialPropertiesTable(mpt)`;
+4. after `PlaceManifest` returns;
+5. plus the original 5 around `Construct/ConstructProcess/SetCuts`.
+
+show BisphenolA's MPT bytes are **valid** through (3) (vptr is the
+G4MaterialPropertiesTable vtable; layout is the expected
+maps + name vectors) and **already overlaid** by (4). In one run the
+overlay was a `G4SipmHousing` (ASCII `"g4sipmHousing"` visible at
+offset 8); in another run, with slight heap-layout drift, the overlay
+was a `G4LogicalVolume` named `"containerLv"` (the g4sipm housing's
+container LV). Both objects come from g4sipm's housing build, so the
+allocator is consistently handing the freed BisphenolA-MPT slot to
+*something* in that build path.
+
+The freeing call chain:
+
+- `g4sipm/g4sipm/src/MaterialFactory.cc:82-99` — `getEpoxy()` allocates
+  the BisphenolA MPT and calls `epoxy->SetMaterialPropertiesTable(mpt)`.
+- `g4sipm/g4sipm/src/model/impl/HamamatsuS12573100C.cc:148-156` (also
+  `HamamatsuS12573100X.cc:148-156` and `G4SipmConfigFileModel.cc:124+`):
+  ```cpp
+  windowMaterial = new G4Material(
+      name, density, MaterialFactory::getInstance()->getEpoxy());
+  // ... build energies/indices ...
+  G4MaterialPropertiesTable* mpt = new G4MaterialPropertiesTable();
+  mpt->AddProperty("RINDEX", energies, indices, 2);
+  windowMaterial->SetMaterialPropertiesTable(mpt);
+  ```
+- Geant4 10.6 — `G4Material::G4Material(name, density, baseMaterial, ...)`
+  (`G4Material.cc:187-218`) calls `CopyPointersOfBaseMaterial()`, which
+  at line 362 does
+  ```cpp
+  fMaterialPropertiesTable = fBaseMaterial->GetMaterialPropertiesTable();
+  ```
+  i.e. **shares** BisphenolA's MPT pointer into the new windowMaterial.
+- Geant4 10.6 — `G4Material::SetMaterialPropertiesTable`
+  (`G4Material.cc:802-816`) does
+  ```cpp
+  if(anMPT && fMaterialPropertiesTable != anMPT) {
+    delete fMaterialPropertiesTable;     // deletes BisphenolA's MPT
+    fMaterialPropertiesTable = anMPT;
+  }
+  ```
+  Because windowMaterial inherited BisphenolA's MPT pointer one line
+  before, the `delete` here frees the MPT that BisphenolA still references.
+
+After that, BisphenolA's pointer in `theMaterialTable` is dangling; the
+slot is reused by some g4sipm housing allocation; `BuildPhysicsTable`
+crashes when an optical process iterates the table.
+
+`/tracking/storeTrajectory 1` matters only because it perturbs
+construction-time heap layout: without it, the allocator hands the freed
+slot to something benign; with it, the slot lands inside a
+`G4SipmHousing` / `G4LogicalVolume` allocation.
+
+### Fix (applied)
+
+Added a helper `MaterialFactory::makeEpoxyComposition(name, density)` in
+`g4sipm/g4sipm/src/MaterialFactory.cc` + `MaterialFactory.hh` that builds
+a fresh G4Material with epoxy's element composition WITHOUT using the
+derived-material ctor, so the result starts with `fMaterialPropertiesTable
+= nullptr` and the caller can safely attach its own MPT.
+
+Replaced the three call sites that were creating windowMaterials via
+the derived ctor:
+
+- `g4sipm/g4sipm/src/model/impl/HamamatsuS12573100C.cc` (line ~148)
+- `g4sipm/g4sipm/src/model/impl/HamamatsuS12573100X.cc` (line ~151)
+- `g4sipm/g4sipm/src/model/impl/G4SipmConfigFileModel.cc` (line ~123)
+
+with `MaterialFactory::getInstance()->makeEpoxyComposition(name, density)`.
+
+Verification: with `storeTrajectory 1` + `sipm_model="hamamatsu-s12573-100c"`,
+the prior 100%-crash reproducer now exits 0 on 5/5 runs. With photon
+tracking enabled (drop `--noOpticalPhotonTracking`), the previously-gated
+bug C (`GroupIException` at EndOfRunAction) also no longer reproduces:
+3/3 clean exits.
+
+### Fix options considered
+
+The Geant4 behaviour is unsafe but hard to change locally. The g4sipm
+code is the actionable side. Options, cheapest first:
+
+1. **Stop attaching an MPT to BisphenolA itself** in
+   `MaterialFactory::getEpoxy`. Move the RINDEX MPT to whichever places
+   use epoxy directly as a logical-volume material (`G4SipmModel::getWindowMaterial`'s
+   default path returns `getEpoxy()` — that consumer needs RINDEX).
+   This is minimal-surface but changes a singleton's externally visible
+   state.
+2. **Stop using derived-material construction for windowMaterials** in
+   `HamamatsuS12573100C`/`HamamatsuS12573100X`/`G4SipmConfigFileModel`.
+   Construct each windowMaterial with its own composition (copy the
+   epoxy element list explicitly) so it does not inherit BisphenolA's
+   MPT pointer. More duplication; more local.
+3. **Patch Geant4** so `SetMaterialPropertiesTable` does not delete an
+   inherited (base-material-shared) MPT. Conceptually correct but
+   touches an installed dependency.
+
+(1) is the most surgical user-side fix. (2) is more invasive but
+leaves both BisphenolA-as-direct-material and BisphenolA-as-base-material
+working. (3) is the principled fix but requires building Geant4 with a
+patch and tracking that fork.
+
+### Related observations
+
+The crash address fingerprint (`0x818400007`, `0x97fffea49100041d`,
+etc. across runs) is the value of a clobbered `G4String::__is_long()`
+byte read from an element of the overlaid object that happens to land
+at the offset of `G4MaterialConstPropertyName`'s vector buffer — i.e.
+the wild value is *content* of the overlay, not an MPT pointer. The
+previous session's framing of *"the MPT pointer itself is wildly
+invalid"* was a misread of which load was faulting.
+
+### Previous session's residual hypotheses (now reframed)
+
+The pre-existing patch on `g4sipm/g4sipm/src/MaterialFactory.cc` for
+`getBoronCarbideCeramic()`/`getCopper()` (attaches empty MPTs) is still
+benign under 10.6 (see Geant4 source analysis below) — but it lives in
+the same file as the suspect `getEpoxy` allocation, and the comment
+trail there is worth reading when tracking down the freed MPT.
 
 ### Proposed (not applied) mitigation: deactivate kRayleigh + kMieHG globally
 
