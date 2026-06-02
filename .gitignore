@@ -6,3 +6,6 @@ G4ScintKit.jl/examples/out/
 
 # Local environment overrides; copy from setup_paths.sh.example.
 bash_scripts/setup_paths.sh
+
+# Julia resolved-dependency lockfiles (matches at any depth)
+Manifest.toml
