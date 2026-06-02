@@ -2,6 +2,7 @@
 /output/
 G4ScintKit.jl/examples/out/
 .DS_Store
+.claude
 
 # Local environment overrides; copy from setup_paths.sh.example.
 bash_scripts/setup_paths.sh
