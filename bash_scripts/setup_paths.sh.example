@@ -14,6 +14,11 @@
 : "${GEANT4_INSTALL_DIR:=/path/to/your/geant4-install}"
 export GEANT4_INSTALL_DIR
 
+# Optional: pin Boost if CMake's find_package(Boost) can't locate it on its
+# own (e.g. a non-default Homebrew prefix on macOS). On Linux you can usually
+# leave this unset and let CMake auto-discover it.
+# export BOOST_ROOT=/opt/homebrew
+
 # ============================================================================
 # Everything below is derived automatically — no edits needed.
 # ============================================================================
@@ -42,3 +47,26 @@ cd "$GEANT4_INSTALL_DIR/bin"
 source "geant4.sh"
 cd "$_ORIG_DIR"
 unset _ORIG_DIR
+
+# Locate the Geant4 CMake config so find_package(Geant4) works regardless of
+# version or lib/lib64 layout. Covers both the old (lib*/Geant4-<version>/)
+# and new (lib*/cmake/Geant4/) install layouts. Sourcing geant4.sh above does
+# not export Geant4_DIR, so we resolve it explicitly here. Override by setting
+# Geant4_DIR yourself before sourcing this file.
+if [[ -z "${Geant4_DIR:-}" ]]; then
+    for _cand in \
+        "$GEANT4_INSTALL_DIR"/lib*/cmake/Geant4 \
+        "$GEANT4_INSTALL_DIR"/lib*/Geant4-*; do
+        if [[ -f "$_cand/Geant4Config.cmake" ]]; then
+            Geant4_DIR="$_cand"
+            break
+        fi
+    done
+    unset _cand
+fi
+if [[ -z "${Geant4_DIR:-}" ]]; then
+    echo "setup_paths: could not find Geant4Config.cmake under $GEANT4_INSTALL_DIR/lib*" >&2
+    echo "  (looked for lib*/cmake/Geant4 and lib*/Geant4-*). Set Geant4_DIR manually." >&2
+    return 1 2>/dev/null || exit 1
+fi
+export Geant4_DIR

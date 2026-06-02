@@ -7,10 +7,16 @@ PATHS="$(dirname "${BASH_SOURCE[0]}")/setup_paths.sh"
 [[ -f "$PATHS" ]] || PATHS="${PATHS}.example"
 source "$PATHS"
 
-# Build g4sipm first if not already built
-if [ ! -f "$G4SIPM/build/g4sipm/libg4sipm.dylib" ]; then
+# Build g4sipm first if not already built. The shared-library extension is
+# platform dependent (.dylib on macOS, .so on Linux).
+case "$(uname -s)" in
+    Darwin) _libext=dylib ;;
+    *)      _libext=so ;;
+esac
+if [ ! -f "$G4SIPM/build/g4sipm/libg4sipm.$_libext" ]; then
     "$G4SIPM/1_setup.sh"
 fi
+unset _libext
 
 mkdir -p "$G4SCINTKIT/build" && cd "$G4SCINTKIT/build"
 if [ -f CMakeCache.txt ]; then rm CMakeCache.txt; fi

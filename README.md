@@ -37,7 +37,7 @@ The following packages are prerequisites:
 
 ```bash
 # 1. Clone with submodules
-git clone --recurse-submodules <your-fork-url> G4ScintKit
+git clone --recurse-submodules git@github.com:kcarloni/G4ScintKit.git
 cd G4ScintKit
 
 # 2. Point at your Geant4 install — either:
