@@ -1,9 +1,9 @@
 [submodule "goddess-package"]
 	path = goddess-package
-	url = git@github.com:kcarloni/goddess-package.git
+	url = https://github.com/kcarloni/goddess-package.git
 [submodule "g4sipm"]
 	path = g4sipm
-	url = git@github.com:kcarloni/g4sipm.git
+	url = https://github.com/kcarloni/g4sipm.git
 [submodule "G4ScintKit.jl"]
 	path = G4ScintKit.jl
-	url = git@github.com:kcarloni/G4ScintKit.jl.git
+	url = https://github.com/kcarloni/G4ScintKit.jl.git
