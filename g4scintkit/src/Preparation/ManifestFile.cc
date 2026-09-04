@@ -133,6 +133,7 @@ void ManifestFile::Write(const GeometryManifest& m, const G4String& path)
 	f << "# G4ScintKit geometry manifest\n";
 	f << "# units: Geant4 internal (mm, radian)\n";
 	f << "# SCINT/FIBER/WRAP/SIPM lines, in file order, are the placement order\n";
+	f << "# material paths are relative to the GODDESS package root ($GODDESS)\n";
 	if (!m.setup_label.empty()) f << "SETUP " << m.setup_label << "\n";
 
 	for (size_t i = 0; i < m.placements.size(); ++i)
@@ -350,4 +351,30 @@ GeometryManifest ManifestFile::Read(const G4String& path)
 	}
 
 	return m;
+}
+
+
+G4String ManifestFile::ResolveMaterialPath(const G4String& path)
+{
+	// Empty is legitimate: glue_file is optional, and an empty material means
+	// "let GODDESS pick its default". Pass both through untouched.
+	if (path.empty()) return path;
+
+	// Already absolute — the caller gave a full path, use it as-is. This keeps
+	// manifests written before relative paths were supported working.
+	if (path[0] == '/') return path;
+
+	const char* goddess = std::getenv("GODDESS");
+	if (!goddess || !*goddess)
+		throw std::runtime_error(
+			"manifest: material path '" + std::string(path) + "' is relative, "
+			"but the GODDESS environment variable is not set, so there is "
+			"nothing to resolve it against.\n"
+			"  Source bash_scripts/setup_paths.sh (which exports GODDESS), or "
+			"give an absolute path in the manifest.");
+
+	std::string root(goddess);
+	while (!root.empty() && root[root.size() - 1] == '/')
+		root.erase(root.size() - 1);
+	return G4String(root + "/" + std::string(path));
 }

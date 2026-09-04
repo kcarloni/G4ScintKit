@@ -147,7 +147,8 @@ void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
 			if (s.sensitive) STConstructor->ConstructASensitiveDetector();
 
 			G4ScintillatorTile* tile = STConstructor->ConstructScintillator(
-				s.dims, s.material_file, lookupVolume(physicalOf, s.mother));
+				s.dims, ManifestFile::ResolveMaterialPath(s.material_file),
+				lookupVolume(physicalOf, s.mother));
 
 			tileOf[s.name]     = tile;
 			physicalOf[s.name] = tile->GetScintillator_physicalVolume();
@@ -157,7 +158,8 @@ void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
 		{
 			const FiberEntry& f = p.fiber;
 			if (f.glued)
-				FConstructor->SetFibreGlued(f.glue_file, f.glue_profile);
+				FConstructor->SetFibreGlued(
+					ManifestFile::ResolveMaterialPath(f.glue_file), f.glue_profile);
 			if (!f.reference.empty())
 				FConstructor->SetFibreReferenceVolume(lookupVolume(physicalOf, f.reference));
 			if (!std::isnan(f.start_reflectivity))
@@ -169,10 +171,12 @@ void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
 			G4Fibre* fibre = 0;
 			if (f.kind == "bent")
 				fibre = FConstructor->ConstructFibre(
-					f.material_file, mother, f.start, f.end, f.bend_angle, f.bend_axis);
+					ManifestFile::ResolveMaterialPath(f.material_file), mother,
+					f.start, f.end, f.bend_angle, f.bend_axis);
 			else
 				fibre = FConstructor->ConstructFibre(
-					f.material_file, mother, f.start, f.end);
+					ManifestFile::ResolveMaterialPath(f.material_file), mother,
+					f.start, f.end);
 
 			physicalOf[f.name] = fibre->GetOutermostVolumeOutsideMother_physicalVolume();
 			break;
@@ -241,7 +245,8 @@ void DetectorConstruction::PlaceManifest(const GeometryManifest& manifest,
 				throw std::runtime_error(
 					"PlaceManifest: WRAP references unknown scintillator '"
 					+ std::string(w.scint) + "'");
-			STConstructor->ConstructWrapping(it->second, w.material_file);
+			STConstructor->ConstructWrapping(
+				it->second, ManifestFile::ResolveMaterialPath(w.material_file));
 			break;
 		}
 		case PlacementEntry::SIPM:
