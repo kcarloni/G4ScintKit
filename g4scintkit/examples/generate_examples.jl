@@ -20,8 +20,14 @@ const DESIGNS = normpath(joinpath(@__DIR__, "..", "..", "G4ScintKit.jl", "exampl
 include(joinpath(DESIGNS, "B3.jl"))
 include(joinpath(DESIGNS, "B4.jl"))
 
+# single_bar/multi_bar read out with the GODDeSS generic photon detector, an
+# idealised tile. sipm_model reads the same B3 geometry out with a real g4sipm
+# model instead -- the die size then comes from the model rather than from the
+# fibre bundle, and the SIPM line gains a `model=` field.
 for (spec, file) in ((B3Spec(), "single_bar.manifest"),
-                     (B4Spec(), "multi_bar.manifest"))
+                     (B4Spec(), "multi_bar.manifest"),
+                     (B3Spec(sipm_model = "hamamatsu-s12573-100c"),
+                      "single_bar_g4sipm.manifest"))
     manifest = build_manifest(spec)
     out = write_manifest(joinpath(@__DIR__, file), manifest)
     println("wrote ", basename(out), "  (",
