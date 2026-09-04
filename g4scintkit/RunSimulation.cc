@@ -6,6 +6,7 @@
 
 
 #include <iostream>
+#include <unistd.h>
 
 #include <boost/regex.hpp>
 #include <boost/lexical_cast.hpp>
@@ -42,6 +43,9 @@ G4bool getBooleanOption(int arg, char** argv, G4String programParameterString, G
 G4bool getStringlikeOption(int & arg, char** argv, G4String programParameterString, G4String & variable, G4String coutStringFragment);
 G4bool getIntegerOption(int & arg, char** argv, G4String programParameterString, G4int & variable, G4String coutStringFragment);
 void ParseInitFile(G4String initFile);
+
+G4bool applyChecked(G4UImanager* UI, const G4String& command);
+G4bool executeMacroChecked(G4UImanager* UI, const G4String& macroPath);
 
 void Usage();
 void Help();
@@ -126,6 +130,26 @@ int main(int argc, char** argv)
 		G4cerr << G4endl << "The environment variable \"BUILDDIR\" (pointing to the directory of where the executable is build) has not been specified!" << G4endl << G4endl;
 		return 1;
 	}
+	// Paths given on the command line are relative to the user's shell, but we
+	// are about to chdir into the build directory — so resolve them against the
+	// current working directory first. Without this, `--manifest rel/path`
+	// silently resolves against BUILDDIR instead and fails with a "cannot read"
+	// message that gives no hint why.
+	{
+		char cwdBuf[4096];
+		if(getcwd(cwdBuf, sizeof(cwdBuf)))
+		{
+			const G4String cwd(cwdBuf);
+			G4String* const relocatable[] =
+				{ &ManifestFile, &OutDir, &PSInputFile, &MacroFile };
+			for(size_t i = 0; i < sizeof(relocatable) / sizeof(relocatable[0]); ++i)
+			{
+				G4String& path = *relocatable[i];
+				if(!path.empty() && path[0] != '/') path = cwd + "/" + path;
+			}
+		}
+	}
+
 	chdir(buildDir.c_str());
 
 	// set minimal and maximal possible photon energy and create a vector containing them:
@@ -250,10 +274,10 @@ int main(int argc, char** argv)
 	G4UImanager * UI = G4UImanager::GetUIpointer();
 
 	// Verbosity (applied before Initialize; hadronic verbose must wait until after)
-	UI->ApplyCommand("/control/verbose " + boost::lexical_cast<G4String>(ControlVerbosity));
-	UI->ApplyCommand("/run/verbose " + boost::lexical_cast<G4String>(RunVerbosity));
-	UI->ApplyCommand("/event/verbose " + boost::lexical_cast<G4String>(EventVerbosity));
-	UI->ApplyCommand("/tracking/verbose " + boost::lexical_cast<G4String>(TrackingVerbosity));
+	if(!applyChecked(UI, "/control/verbose " + boost::lexical_cast<G4String>(ControlVerbosity))) return 1;
+	if(!applyChecked(UI, "/run/verbose " + boost::lexical_cast<G4String>(RunVerbosity))) return 1;
+	if(!applyChecked(UI, "/event/verbose " + boost::lexical_cast<G4String>(EventVerbosity))) return 1;
+	if(!applyChecked(UI, "/tracking/verbose " + boost::lexical_cast<G4String>(TrackingVerbosity))) return 1;
 
 /// initialise G4 kernel (i.e. construct detector, define physics,...)
 	runManager->Initialize();
@@ -278,15 +302,15 @@ int main(int argc, char** argv)
 	// load the particle source input file
 	if(UseParticleListSource)
 	{
-		UI->ApplyCommand("/particleList/path " + PSInputFile);
+		if(!applyChecked(UI, "/particleList/path " + PSInputFile)) return 1;
 	}
 	else if(UsePhotonListSource)
 	{
-		UI->ApplyCommand("/pls/photonListPath " + PSInputFile);
+		if(!applyChecked(UI, "/pls/photonListPath " + PSInputFile)) return 1;
 	}
 	else
 	{
-		UI->ApplyCommand("/control/execute " + PSInputFile);
+		if(!executeMacroChecked(UI, PSInputFile)) return 1;
 
 		G4String gpsOutFile = gpsm->getOutputFileName();
 		gpsOutFile = assembleOutputFileName(OutDir + dataSubOutDir, gpsOutFile, Phrase);
@@ -298,7 +322,7 @@ int main(int argc, char** argv)
 	if(MacroFile != "")
 	{
 		G4cout << "Using macro file : " << MacroFile << G4endl;
-		UI->ApplyCommand("/control/execute " + MacroFile);
+		if(!executeMacroChecked(UI, MacroFile)) return 1;
 	}
 
 /// run Geant4
@@ -312,7 +336,7 @@ int main(int argc, char** argv)
 			size_t nev = particleListSource->GetNumEventsInRun(r);
 			simulationMessenger->SetCurrentRunId(rid);
 			G4cout << "executing run " << rid << " with " << nev << " events" << G4endl;
-			UI->ApplyCommand("/run/beamOn " + boost::lexical_cast<G4String>(nev));
+			if(!applyChecked(UI, "/run/beamOn " + boost::lexical_cast<G4String>(nev))) return 1;
 			particleListSource->FreeRunData(r);
 			if(r + 1 < particleListSource->GetNumberOfRuns())
 				particleListSource->AdvanceRun();
@@ -323,10 +347,15 @@ int main(int argc, char** argv)
 		// set run ID if specified
 		if(RunID >= 0)
 		{
-			UI->ApplyCommand("/run/setRunIDCounter " + boost::lexical_cast<G4String>(RunID));
+			// Geant4 has no /run/setRunIDCounter UI command — this was previously
+			// issued as one, which G4UImanager rejected as "command not found"
+			// (rc 100) while nothing checked the code, so --runID silently did
+			// nothing. SetRunIDCounter is a G4RunManager method; the value flows
+			// into the HDF5 group name via aRun->GetRunID() in RunAction.
+			runManager->SetRunIDCounter(RunID);
 		}
 		G4cout << "executing command: run/beamOn " << NumEvents << G4endl;
-		UI->ApplyCommand("/run/beamOn " + boost::lexical_cast<G4String>(NumEvents));
+		if(!applyChecked(UI, "/run/beamOn " + boost::lexical_cast<G4String>(NumEvents))) return 1;
 	}
 	// interactive mode: define visualization and UI terminal
 	else if(NumEvents < 0)
@@ -340,7 +369,12 @@ int main(int argc, char** argv)
 		G4UIExecutive * session = new G4UIExecutive(argc, argv);
 
 		// get visualisation commands
-		UI->ApplyCommand("/control/execute " + simDir + "/vis.mac");
+		// Not fatal, unlike the macros above: a missing visualisation driver can
+		// make a vis.mac command fail without affecting the geometry or physics,
+		// and dropping into the session is still more useful than refusing to.
+		if(!executeMacroChecked(UI, simDir + "/vis.mac"))
+			G4cerr << "RunSimulation: continuing without full visualisation setup."
+			       << G4endl;
 
 		// start session
 		session->SessionStart();
@@ -628,6 +662,81 @@ void Help()
 	G4cout << "            --eventVerbose <number>         : Specify the GEANT4 verbosity level set using \"/event/verbose\". Default is: \"0\""          << G4endl;
 	G4cout << "            --trackingVerbose <number>      : Specify the GEANT4 verbosity level set using \"/tracking/verbose\". Default is: \"0\""       << G4endl;
 	G4cout << "            --hadronicVerbose <number>     : Specify the GEANT4 verbosity level set using \"/process/had/verbose\". Default is: \"0\""  << G4endl;
-	G4cout << "            --noOpticalPhotonTracking       : Do not track optical photons when simulating events."                                        << G4endl << G4endl;
+	G4cout << "            --noOpticalPhotonTracking       : Do not track optical photons when simulating events."                                        << G4endl;
+	G4cout << "            --manifest <filename>           : REQUIRED. Geometry manifest describing the setup to build."                                  << G4endl;
+	G4cout << "                                              A flat text file of SETUP/SCINT/FIBER/WRAP/SIPM/CASING lines; file order is"                 << G4endl;
+	G4cout << "                                              placement order. See docs/manifest_format.md. Material paths inside it may be"              << G4endl;
+	G4cout << "                                              relative to $GODDESS, which is how a manifest stays portable between machines."              << G4endl;
+	G4cout << "            --runID <number>                : Run ID stamped into the HDF5 output. Default is: \"0\""                                      << G4endl;
+	G4cout << "            --seed <number>                 : Random-number seed, for reproducible runs."                                                  << G4endl;
+	G4cout << "            --quiet <true|false>            : Suppress per-event console output. Default is: \"false\""                                    << G4endl << G4endl;
 	G4cout << "=========================================================================================================================================" << G4endl << G4endl;
+}
+
+
+/**
+ *  Apply a UI command, treating a rejection as fatal.
+ *
+ *  G4UImanager reports an illegal command but has no way to refuse to continue;
+ *  nothing above it checks the return code either. A rejected command means the
+ *  run is not configured the way the caller asked for, so continuing produces
+ *  physics that silently disagrees with the recorded arguments. Returns false
+ *  when the caller should abort.
+ */
+G4bool applyChecked(G4UImanager* UI, const G4String& command)
+{
+	G4int rc = UI->ApplyCommand(command);
+	if(rc == 0) return true;
+
+	G4cerr << G4endl
+	       << "RunSimulation: Geant4 rejected the command <" << command << ">"
+	       << G4endl
+	       << "  (G4UImanager return code " << rc << "). Refusing to run: the"
+	       << G4endl
+	       << "  simulation would not be configured as requested." << G4endl << G4endl;
+	return false;
+}
+
+/**
+ *  Execute a macro file, treating any failure inside it as fatal.
+ *
+ *  Two checks are needed here, and neither subsumes the other.
+ *
+ *  GetLastReturnCode() is the load-bearing one. `/control/execute` succeeds as a
+ *  command even when a command *inside* the macro is rejected: G4UIbatch stops
+ *  reading the file at that point ("Batch is interrupted!!") and records the
+ *  code in G4UImanager, which must be read back explicitly. Without it a single
+ *  bad line silently drops that line and every line after it, leaving the rest
+ *  of the macro's settings at their defaults. It also catches a macro that
+ *  cannot be opened at all, since G4UIbatch's constructor records
+ *  fParameterUnreadable in that case.
+ *
+ *  The applyChecked() call below looks redundant next to that, but is not.
+ *  G4UImanager resets lastRC only inside ExecuteMacroFile, so a rejection at the
+ *  *command* level -- an empty or unparseable path, which never reaches
+ *  ExecuteMacroFile -- leaves lastRC holding its previous value. That value is
+ *  zero here, since we abort on any nonzero code, so without this check such a
+ *  failure would read back as success.
+ *
+ *  Returns false when the caller should abort.
+ */
+G4bool executeMacroChecked(G4UImanager* UI, const G4String& macroPath)
+{
+	if(!applyChecked(UI, "/control/execute " + macroPath)) return false;
+
+	G4int rc = UI->GetLastReturnCode();
+	if(rc == 0) return true;
+
+	G4cerr << G4endl
+	       << "RunSimulation: a command in the macro <" << macroPath << "> was"
+	       << G4endl
+	       << "  rejected (return code " << rc << "), so Geant4 stopped reading it"
+	       << G4endl
+	       << "  there. That line and every line after it were not applied."
+	       << G4endl
+	       << "  See the \"Illegal parameter\" message above for the offending"
+	       << G4endl
+	       << "  command. Refusing to run with a partially-applied macro."
+	       << G4endl << G4endl;
+	return false;
 }
