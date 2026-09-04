@@ -1,0 +1,19 @@
+# G4ScintKit geometry manifest
+# units: Geant4 internal (mm, radian)
+# SCINT/FIBER/WRAP/SIPM lines, in file order, are the placement order
+# material paths are relative to the GODDESS package root ($GODDESS)
+SETUP B3
+SCINT name=scint_1 g4name= dims=49.5,9.5,1875 pos=0,0,0 rot=1,0,0,0,1,0,0,0,1 mother=world material=source/MaterialProperties/Scintillator/Fermilab_scintillator.properties sensitive=1
+FIBER name=fiber_1_1 kind=straight mother=scint_1 start=12.375,0,-938.5 end=12.375,0,958.5 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= start_refl=1 end_refl=nan loop_id=0
+FIBER name=fiber_1_2 kind=bent mother=world start=12.375,0,958.5 end=10.611459921649711,0,971.66221615941186 bend_angle=0.26638360432593799 bend_axis=-0,-1,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=0
+FIBER name=fiber_1_3 kind=straight mother=world start=10.611459921649711,0,971.66221615941186 end=1.7635400783503012,0,1004.0877838405881 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=0
+FIBER name=fiber_1_4 kind=bent mother=world start=1.7635400783503012,0,1004.0877838405881 end=1.0658141036401503e-14,0,1017.25 bend_angle=0.26638360432593799 bend_axis=0,1,-0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=0
+FIBER name=fiber_1_5 kind=straight mother=world start=0,0,1017.25 end=0,0,1037.25 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=0
+FIBER name=fiber_2_1 kind=straight mother=scint_1 start=-12.375,0,-938.5 end=-12.375,0,958.5 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= start_refl=1 end_refl=nan loop_id=1
+FIBER name=fiber_2_2 kind=bent mother=world start=-12.375,0,958.5 end=-10.989785315127717,0,970.18771358153685 bend_angle=0.2359371465894422 bend_axis=-0,1,-0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=1
+FIBER name=fiber_2_3 kind=straight mother=world start=-10.989785315127717,0,970.18771358153685 end=-2.4852146848722683,0,1005.5622864184631 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=1
+FIBER name=fiber_2_4 kind=bent mother=world start=-2.4852146848722683,0,1005.5622864184631 end=-1.0999999999999854,0,1017.25 bend_angle=0.2359371465894422 bend_axis=0,-1,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=1
+FIBER name=fiber_2_5 kind=straight mother=world start=-1.1000000000000001,0,1017.25 end=-1.1000000000000001,0,1037.25 bend_angle=0 bend_axis=0,0,0 material=source/MaterialProperties/Fibre/Kuraray_Y11-300_round_1mm.properties reference= glued=0 glue_file= glue_profile= end_refl=nan loop_id=1
+WRAP scint=scint_1 g4name= material=source/MaterialProperties/Scintillator/Wrapping_TiO2.properties cut=
+SIPM name=sipm ref_volume=world face_dir=0,0,-1 rel_pos=-0.55000000000000004,0,1037.5 edge_length=3 fiber=fiber_1_5 coupling_normal=0,0,-1 coupling_pos=0,0,0.375 coupling_width=0.25 fiber_is_base=0
+CASING module_half_x=24.75 module_min_y=-4.75 module_max_y=4.75 module_half_z=1037.25 aluminum_thickness=0 lead_thickness=0 num_bars=1 bar_width=24.75 scinti_z=2074.5
