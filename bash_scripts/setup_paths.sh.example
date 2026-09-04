@@ -23,8 +23,31 @@ export GEANT4_INSTALL_DIR
 # Everything below is derived automatically — no edits needed.
 # ============================================================================
 
-# Project root, derived from this script's location.
-G4SCINTKIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Project root, derived from this script's own location.
+#
+# Locating "this file" is shell-dependent: ${BASH_SOURCE[0]} is bash-only and
+# is empty under zsh (the default shell on macOS), where dirname "" yields "."
+# and the root would silently resolve one directory too high. zsh's equivalent
+# is %x, whose syntax bash cannot even parse, so it is reached through eval.
+# Set G4SCINTKIT yourself before sourcing to bypass all of this.
+if [ -z "${G4SCINTKIT:-}" ]; then
+    if [ -n "${BASH_VERSION:-}" ]; then
+        _g4sk_self="${BASH_SOURCE[0]}"
+    elif [ -n "${ZSH_VERSION:-}" ]; then
+        _g4sk_self="$(eval 'printf %s "${(%):-%x}"')"
+    else
+        _g4sk_self="$0"
+    fi
+    G4SCINTKIT="$(cd "$(dirname "$_g4sk_self")/.." && pwd)"
+    unset _g4sk_self
+fi
+
+if [ ! -d "$G4SCINTKIT/g4scintkit" ] || [ ! -d "$G4SCINTKIT/bash_scripts" ]; then
+    echo "setup_paths: '$G4SCINTKIT' does not look like the G4ScintKit root" >&2
+    echo "  (expected g4scintkit/ and bash_scripts/ inside it)." >&2
+    echo "  Export G4SCINTKIT=/path/to/G4ScintKit and source this file again." >&2
+    return 1 2>/dev/null || exit 1
+fi
 export G4SCINTKIT
 export GODDESS="$G4SCINTKIT/goddess-package"
 export G4SIPM="$G4SCINTKIT/g4sipm"
@@ -53,16 +76,13 @@ unset _ORIG_DIR
 # and new (lib*/cmake/Geant4/) install layouts. Sourcing geant4.sh above does
 # not export Geant4_DIR, so we resolve it explicitly here. Override by setting
 # Geant4_DIR yourself before sourcing this file.
+# Located with `find` rather than a lib*/ glob: an unmatched glob expands to
+# itself in bash but is a fatal "no matches found" in zsh, which would abort
+# this file the moment one of the two layouts is absent.
 if [[ -z "${Geant4_DIR:-}" ]]; then
-    for _cand in \
-        "$GEANT4_INSTALL_DIR"/lib*/cmake/Geant4 \
-        "$GEANT4_INSTALL_DIR"/lib*/Geant4-*; do
-        if [[ -f "$_cand/Geant4Config.cmake" ]]; then
-            Geant4_DIR="$_cand"
-            break
-        fi
-    done
-    unset _cand
+    _g4sk_cfg="$(find "$GEANT4_INSTALL_DIR" -maxdepth 4 -name Geant4Config.cmake -print 2>/dev/null | head -1)"
+    [ -n "$_g4sk_cfg" ] && Geant4_DIR="$(dirname "$_g4sk_cfg")"
+    unset _g4sk_cfg
 fi
 if [[ -z "${Geant4_DIR:-}" ]]; then
     echo "setup_paths: could not find Geant4Config.cmake under $GEANT4_INSTALL_DIR/lib*" >&2

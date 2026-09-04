@@ -30,6 +30,8 @@ Required:
   --manifest <file>         Geometry manifest file (produced by G4ScintKit.jl
                             or hand-written).
 
+All long options accept either `--flag value` or `--flag=value`.
+
 Run settings:
   --nevents <N>             Number of events (default: 1; 0 = interactive/visu).
   --trackphotons true|false Track optical photons (default: false).
@@ -41,8 +43,10 @@ Run settings:
 
 Injection (General Particle Source):
   --injparticle <name>      e.g. "mu-", "e-", "gamma" (default: "mu-").
-  --injenergy <"E unit">    e.g. "3 GeV" (default: "3 GeV"). With --key=value
-                            the quotes aren't needed (e.g. --injenergy="3 GeV").
+  --injenergy <"E unit">    e.g. "3 GeV" (default: "3 GeV"). The value has a
+                            space in it, so quote it -- both --injenergy "3 GeV"
+                            and --injenergy="3 GeV" work, but an unquoted
+                            --injenergy=3 GeV is split by the shell and fails.
   --injpos "<x y z unit>"   Plane center (default: "0 200 0 mm").
   --injdir "<x y z>"        Surface normal direction (default: "0 -1 0").
   --injthetamin / --injthetamax / --injphimin / --injphimax  "<angle unit>"
